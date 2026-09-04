@@ -103,6 +103,17 @@ clear text. Put something in front of it:
   no inbound port opens on the box.
 - **A reverse proxy** you already run, terminating TLS.
 
+Once it's reachable over HTTPS, Chrome on Android will offer **Install app**
+from its menu (the page ships a manifest, so this needs no extra step here).
+Installing removes the address bar and gives the mixer a home-screen icon —
+real screen space back on a phone. This relies on HTTPS, with one exception the W3C Secure Contexts spec carves
+out for loopback addresses: a plain SSH-forwarded `http://127.0.0.1:8080` is
+still a secure context, so the install option is available there too, tunnel
+or not. iOS Safari
+reads the `apple-mobile-web-app-*` tags in `index.html` for the same effect
+via *Add to Home Screen*, but that path was not tested — your friend is on
+Android, where it was.
+
 ## Access model
 
 Two tiers, matching an unlisted-link app for a couple of people:
@@ -134,7 +145,7 @@ and `run.sh` and the systemd unit both load it.
 | `STEM_WEB_DIR` | `./web` | Static front end. |
 | `STEM_MODEL` | `htdemucs.yaml` | Any four-stem model `audio-separator` knows. |
 | `STEM_MAX_UPLOAD_MB` | `100` | Rejected before the body is read. |
-| `STEM_MAX_DURATION_S` | `600` | Checked with ffprobe after upload. |
+| `STEM_MAX_DURATION_S` | `300` | Checked with ffprobe after upload. Set with the mobile mixer's memory cost in mind — see below. |
 | `STEM_JOB_TTL_HOURS` | `24` | Age at which a job's directory is deleted. |
 | `STEM_WORKERS` | `1` | Concurrent separations. Raising this on a 4-core box makes both jobs slower without finishing either sooner. |
 | `STEM_PREVIEW_BITRATE` | `192k` | Playback copies only; downloads are unaffected. |
@@ -239,12 +250,17 @@ channel, so four stereo stems at the 44.1 kHz context rate cost
 `4 × 240 × 44100 × 2 × 4` bytes on any engine. The remaining ~172 MB is
 Chromium's own overhead, measured on desktop Linux, and may differ on a phone.
 
-It scales linearly, and **`STEM_MAX_DURATION_S` defaults to 600** — a
-10-minute track would need about 850 MB of decoded audio alone, which a mobile
-browser will not survive. The server currently accepts uploads the mobile
-mixer cannot open. Either lower that limit to match what phones can handle, or
-change the mixer to stream from `<audio>` elements instead of decoding whole
-buffers. Nothing here has been changed to address it yet.
+It scales linearly, so `STEM_MAX_DURATION_S` now defaults to **300** rather
+than the 600 it shipped with. Projecting the measured 240 s figure forward
+linearly (339 MB ÷ 240 s ≈ 1.41 MB/s of decoded audio) — this is arithmetic
+from the one measurement above, not a separate measurement at 300 s — a track
+at the new cap needs roughly 424 MB of decoded audio plus the ~172 MB
+Chromium overhead, call it **~600 MB** total. That is still real weight for a
+phone to hold in one tab, just no longer the ~1 GB a 10-minute upload would
+have demanded under the old default. If a track near the cap gets a tab
+killed in practice, the actual fix is changing the mixer to stream from
+`<audio>` elements instead of decoding whole buffers, not lowering the limit
+further — halving it again would start constraining ordinary song lengths.
 
 ### Not measured
 

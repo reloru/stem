@@ -36,6 +36,9 @@ _STATIC_ROUTES = {
     "/app.js": "app.js",
     "/styles.css": "styles.css",
     "/favicon.svg": "favicon.svg",
+    "/manifest.webmanifest": "manifest.webmanifest",
+    "/icon-192.png": "icon-192.png",
+    "/icon-512.png": "icon-512.png",
 }
 
 _CONTENT_TYPES = {
@@ -43,8 +46,10 @@ _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
     ".mp3": "audio/mpeg",
+    ".png": "image/png",
     ".svg": "image/svg+xml",
     ".wav": "audio/wav",
+    ".webmanifest": "application/manifest+json",
     ".zip": "application/zip",
 }
 
