@@ -132,7 +132,7 @@ class Config:
             access_key=access_key,
             open_access=open_access,
             max_upload_bytes=_env_int("STEM_MAX_UPLOAD_MB", 100) * 1024 * 1024,
-            max_duration_seconds=_env_int("STEM_MAX_DURATION_S", 600),
+            max_duration_seconds=_env_int("STEM_MAX_DURATION_S", 300),
             job_ttl_seconds=_env_int("STEM_JOB_TTL_HOURS", 24) * 3600,
             model_filename=os.environ.get("STEM_MODEL", "htdemucs.yaml"),
             model_dir=Path(
