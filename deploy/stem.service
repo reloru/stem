@@ -1,0 +1,37 @@
+# systemd unit for the stem server.
+#
+#   sudo cp deploy/stem.service /etc/systemd/system/stem.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now stem
+#
+# Edit User, Group and the two paths below if the checkout is not at
+# /home/ubuntu/stem. The unit binds to 127.0.0.1 by default (see .env), so put
+# a tunnel or a reverse proxy in front of it rather than opening the port.
+
+[Unit]
+Description=Stem separation server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/stem
+EnvironmentFile=/home/ubuntu/stem/.env
+Environment=PYTHONPATH=/home/ubuntu/stem/server
+Environment=PATH=/home/ubuntu/stem/.venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/ubuntu/stem/.venv/bin/python -m stemapp
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# The service reads uploads, writes stems, and runs ffmpeg. Nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/stem/data
+
+[Install]
+WantedBy=multi-user.target
