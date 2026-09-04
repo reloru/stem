@@ -183,6 +183,13 @@ that is genuinely quiet looks quiet.
 
 The monitor fader is playback only and is not part of an export.
 
+Fader positions, mutes and solos are written to `localStorage` as you set them
+and restored when you reopen the same job. That is there for phones: a mobile
+browser discards backgrounded tabs under memory pressure, and this is an
+expensive tab to keep, so without it every adjustment would be lost the moment
+someone switched apps. The last 20 tracks are remembered; nothing leaves the
+browser.
+
 ## Disk per job
 
 For a five-minute track, roughly: 210 MB of stems, 30 MB of previews, and
@@ -193,25 +200,64 @@ deleted as soon as the stems exist. Everything goes when the TTL expires.
 
 Measured in a 4-core x86_64 container with 15 GB of RAM:
 
-- A 20.0 s 44.1 kHz stereo file completed in **34.2 s** end to end — decode,
-  separation, 16-bit normalisation and MP3 previews. Model loading is a fixed
-  cost inside that number, so it does not scale linearly; a longer track was
-  not timed and no rate is extrapolated here.
+| Input | End to end |
+| --- | --- |
+| 20.0 s | 34.2 s |
+| 240.0 s | 420.0 s |
+
+Both numbers cover decode, separation, 16-bit normalisation and MP3 previews.
+The short one is dominated by a fixed model-loading cost, so the 4-minute
+figure — **about 1.75× the length of the track** — is the one worth planning
+around on comparable hardware.
+
 - Summing the four stems at unity reproduced the input with a **−20.1 dB**
   residual at **zero sample lag**. That was a synthetic signal — sine tones and
   filtered noise — which is nothing like the material `htdemucs` was trained
   on, so the residual on real music will differ and was not measured.
 - Export clip protection: against a deliberately low −25 dB test ceiling the
   renderer applied −8.41 dB and the output landed at −24.998 dBFS.
-- The browser front end was driven end to end in Chromium at 1440×900 and
-  390×844: four strips, vertical faders on desktop and horizontal on the phone
-  layout, waveforms drawn, transport advancing, mute and solo, WAV export, no
-  console errors, no CSP violations, no horizontal overflow at 390 px.
+- The front end was driven end to end in Chromium at 1440×900, 390×844 and
+  844×390: four strips, vertical faders on desktop and horizontal in the phone
+  layout, waveforms drawn, transport advancing, mute and solo, WAV export,
+  balances surviving a reload — no console errors, no CSP violations, no
+  horizontal overflow at any of the three sizes.
 
-Not measured: anything on ARM. The wheel availability above says the install
-will work on `aarch64`; how fast a separation runs on an Ampere A1 core is
-unknown and has to be timed on the box. No iOS Safari or Firefox run happened —
-only Chromium.
+### The mixer's memory cost scales with track length
+
+Opening a 4-minute track in a 390×844 mobile-Chrome context, measured as
+resident memory across every Chromium process:
+
+| | |
+| --- | --- |
+| Network to reach a playable mixer | 22.0 MB (4 × 5.76 MB MP3) |
+| Time to playable, on localhost | 6.7 s |
+| RSS attributable to the mixer | 511 MB |
+
+Roughly 339 MB of that is the four decoded stems and is not
+implementation-specific: `AudioBuffer` holds 32-bit float per sample per
+channel, so four stereo stems at the 44.1 kHz context rate cost
+`4 × 240 × 44100 × 2 × 4` bytes on any engine. The remaining ~172 MB is
+Chromium's own overhead, measured on desktop Linux, and may differ on a phone.
+
+It scales linearly, and **`STEM_MAX_DURATION_S` defaults to 600** — a
+10-minute track would need about 850 MB of decoded audio alone, which a mobile
+browser will not survive. The server currently accepts uploads the mobile
+mixer cannot open. Either lower that limit to match what phones can handle, or
+change the mixer to stream from `<audio>` elements instead of decoding whole
+buffers. Nothing here has been changed to address it yet.
+
+### Not measured
+
+Anything on ARM. The wheel availability above says the install will work on
+`aarch64`; separation speed on an Ampere A1 core is unknown and has to be timed
+on the box.
+
+Anything on WebKit. Chromium covers Chrome on Android, which shares its engine.
+It does not cover Chrome on iOS: Apple's App Review Guideline 2.5.6 states
+*"Apps that browse the web must use the appropriate WebKit framework and WebKit
+JavaScript,"* with alternative-engine entitlements limited to the EU and Japan,
+so iOS Chrome is Safari's engine wearing a different icon. No Firefox run
+either.
 
 ## Licence
 

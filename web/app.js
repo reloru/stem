@@ -108,6 +108,74 @@
     } catch (e) { /* private mode; the key simply will not persist */ }
   }
 
+  /* ------------------------------------------------------------------ *
+   * remembered balances
+   *
+   * A phone browser discards backgrounded tabs under memory pressure, and
+   * the decoded stems make this page an expensive tab to keep. A discard
+   * reloads the page, so without this every fader, mute and solo the user
+   * set would be gone when they switch apps and come back.
+   * ------------------------------------------------------------------ */
+
+  var MIX_STORAGE = "stem.mixes";
+  var MIX_HISTORY = 20;
+
+  function readMixes() {
+    try { return JSON.parse(window.localStorage.getItem(MIX_STORAGE)) || {}; }
+    catch (e) { return {}; }
+  }
+
+  function saveMix() {
+    if (!job || !engine.channels.length) return;
+    var all = readMixes();
+    all[job.id] = {
+      at: Date.now(),
+      monitor: engine.masterPos,
+      channels: engine.channels.map(function (channel) {
+        return {
+          name: channel.name,
+          pos: channel.pos,
+          mute: channel.mute,
+          solo: channel.solo
+        };
+      })
+    };
+    Object.keys(all)
+      .sort(function (a, b) { return (all[b].at || 0) - (all[a].at || 0); })
+      .slice(MIX_HISTORY)
+      .forEach(function (id) { delete all[id]; });
+    try { window.localStorage.setItem(MIX_STORAGE, JSON.stringify(all)); }
+    catch (e) { /* private mode or quota; the balance just will not persist */ }
+  }
+
+  var saveTimer = null;
+  function scheduleSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveMix, 400);
+  }
+
+  function restoreMix(jobId) {
+    var stored = readMixes()[jobId];
+    if (!stored || !stored.channels) return false;
+    var byName = {};
+    stored.channels.forEach(function (entry) { byName[entry.name] = entry; });
+    var restored = false;
+    engine.channels.forEach(function (channel) {
+      var entry = byName[channel.name];
+      if (!entry) return;
+      if (typeof entry.pos === "number") channel.pos = clamp(entry.pos, 0, 1);
+      channel.mute = !!entry.mute;
+      channel.solo = !!entry.solo;
+      restored = true;
+    });
+    if (restored && typeof stored.monitor === "number") {
+      engine.masterPos = clamp(stored.monitor, 0, 1);
+      if (masterFader) masterFader.set(engine.masterPos, false);
+      $("master-readout").textContent = formatDb(engine.masterPos);
+    }
+    return restored;
+  }
+
   var keyResolve = null;
 
   function askForKey(message) {
@@ -684,7 +752,12 @@
       return;
     }
 
+    var restored = restoreMix(current.id);
     buildStrips(current);
+    if (restored) {
+      applyGains();
+      toast("Picked up the balance you left on this track.");
+    }
     $("download-zip").href = "/api/jobs/" + current.id + "/stems.zip";
     $("time-total").textContent = formatTime(engine.duration);
     $("export-status").textContent = "";
@@ -735,11 +808,11 @@
       var toggles = make("div", "strip-toggles");
       var muteButton = make("button", "toggle-button mute", "M");
       muteButton.type = "button";
-      muteButton.setAttribute("aria-pressed", "false");
+      muteButton.setAttribute("aria-pressed", String(channel.mute));
       muteButton.setAttribute("aria-label", "Mute " + channel.name);
       var soloButton = make("button", "toggle-button solo", "S");
       soloButton.type = "button";
-      soloButton.setAttribute("aria-pressed", "false");
+      soloButton.setAttribute("aria-pressed", String(channel.solo));
       soloButton.setAttribute("aria-label", "Solo " + channel.name);
       toggles.appendChild(muteButton);
       toggles.appendChild(soloButton);
@@ -759,6 +832,7 @@
           readout.textContent = formatDb(value);
           applyGains();
           refreshStripStates();
+          scheduleSave();
         }
       });
       stemFaders.push(fader);
@@ -768,6 +842,7 @@
         muteButton.setAttribute("aria-pressed", String(channel.mute));
         applyGains();
         refreshStripStates();
+        scheduleSave();
       });
 
       soloButton.addEventListener("click", function () {
@@ -775,6 +850,7 @@
         soloButton.setAttribute("aria-pressed", String(channel.solo));
         applyGains();
         refreshStripStates();
+        scheduleSave();
       });
 
       attachSeek(waveWrap, function (fraction) { seek(fraction * engine.duration); });
@@ -949,6 +1025,7 @@
       }
       applyGains();
       refreshStripStates();
+      scheduleSave();
       event.preventDefault();
     }
   }
@@ -1007,6 +1084,7 @@
         engine.masterPos = value;
         $("master-readout").textContent = formatDb(value);
         applyGains();
+        scheduleSave();
       }
     });
     $("master-readout").textContent = formatDb(UNITY_POS);
