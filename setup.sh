@@ -37,7 +37,17 @@ fi
 
 note "installing audio-separator (this downloads a few hundred MB the first time)"
 ./.venv/bin/pip install --upgrade pip >/dev/null
-./.venv/bin/pip install "audio-separator[cpu]" || fail "the audio-separator install failed; the output above says why."
+# audioread is installed explicitly, not left to come in transitively via
+# librosa. audio_separator/separator/uvr_lib_v5/spec_utils.py imports it
+# directly at module load, but audio-separator's own dependency list never
+# declares it -- it silently relied on librosa bringing it along. librosa's
+# newest release (1.0.0) dropped audioread from its own dependencies, and
+# audio-separator constrains librosa only as ">=0.10" with no upper bound,
+# so which librosa pip resolves -- and therefore whether audioread shows up
+# at all -- depends on resolver timing. Installing it here removes that
+# dependency on an upstream package we do not control.
+./.venv/bin/pip install "audio-separator[cpu]" audioread \
+  || fail "the audio-separator install failed; the output above says why."
 
 # ---- configuration -------------------------------------------------------
 
