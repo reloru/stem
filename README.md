@@ -1,1 +1,219 @@
 # stem
+
+Upload a track, get its four stems, adjust them in a browser mixer, download
+what you made. Self-hosted: the audio never leaves the machine you run this on.
+
+Four stems come out — `vocals`, `drums`, `bass`, `other` — as 44.1 kHz 16-bit
+stereo WAV, individually or as one zip. The mixer plays all four in sync with a
+fader, mute and solo per stem; exporting renders the balance server-side from
+the lossless stems, so nothing you download has been through the lossy copies
+the browser uses for playback.
+
+## How it works
+
+```
+upload ──▶ ffmpeg ──▶ audio-separator ──▶ ffmpeg ──▶ ffmpeg
+           decode      htdemucs            16-bit    192 kbps MP3
+           44.1k/16    4 × WAV             normalise  previews
+                                                          │
+                          browser ◀── 4 × MP3 ◀────────────┘
+                          Web Audio: 4 sources ▶ 4 gains ▶ monitor ▶ out
+                                                          │
+                          export ──▶ POST gains ──▶ ffmpeg measures the summed
+                                                    peak, applies one constant
+                                                    attenuation if it would
+                                                    clip, then sums to WAV/MP3
+```
+
+Separation is neural, so a model and a runtime are unavoidable — that is the
+one dependency this project has. Everything else is the Python standard library
+and ffmpeg: the HTTP server is `http.server`, the multipart parser is
+hand-written (`cgi` is gone as of Python 3.13 and `email` buffers whole bodies
+in memory), and the front end is plain HTML, CSS and JavaScript with no build
+step and no framework.
+
+**Why `audio-separator` rather than Demucs directly.** Meta archived
+[facebookresearch/demucs](https://github.com/facebookresearch/demucs) on
+2025-01-01 and its author states it is no longer maintained.
+[nomadkaraoke/python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator)
+is MIT, actively maintained, and runs the same `htdemucs` weights, so you get
+the model without depending on an archived repository.
+
+**Why a measured attenuation instead of a limiter on export.** A limiter
+applies gain reduction that varies over time, changing the dynamics you
+balanced, and ffmpeg's `alimiter` also delays its output by its lookahead
+window — measured at 219 samples (5.0 ms) at the default attack — which would
+leave every exported mix out of alignment with the stems it came from. Instead
+the summed peak is measured in floating point first, and a single constant gain
+is applied only if the sum would exceed −0.3 dBFS. The API reports how much was
+applied.
+
+## Requirements
+
+- Python 3.10 or newer (3.12 on Ubuntu 24.04 is fine)
+- `ffmpeg` and `ffprobe` — `sudo apt install -y ffmpeg`
+- Disk for the virtualenv, plus 81 MB of model weights and job storage
+- 4 GB of RAM free while a job runs
+
+The virtualenv measured **6.0 GB on x86_64**, because PyPI's default `torch`
+wheel for that platform bundles CUDA libraries even under the `[cpu]` extra —
+the install here reported `2.14.0+cu130`. No CUDA wheels exist for
+`manylinux aarch64`, so an ARM install pulls the CPU-only build and will be
+considerably smaller; that size was not measured. Linux `aarch64` wheels are
+published for `torch`, `onnxruntime`, `numpy` and `soundfile`, so the install
+works from wheels on an ARM box with no compiler.
+
+## Install
+
+```
+bash setup.sh
+```
+
+It creates `.venv`, installs `audio-separator[cpu]`, writes a `.env` with a
+freshly generated access key, downloads the `htdemucs` weights, and verifies
+that every external tool answers. Re-running it keeps an existing `.env`.
+
+## Run
+
+```
+bash run.sh
+```
+
+As a service:
+
+```
+sudo cp deploy/stem.service /etc/systemd/system/stem.service
+sudo systemctl daemon-reload && sudo systemctl enable --now stem
+```
+
+Edit the paths and `User` in the unit if your checkout is not at
+`/home/ubuntu/stem`.
+
+## Reaching it from a phone
+
+The server binds `127.0.0.1` by default and speaks plain HTTP. Do not change
+that to `0.0.0.0` and open the port — the access key would cross the network in
+clear text. Put something in front of it:
+
+- **SSH forward**, nothing to install: `ssh -L 8080:127.0.0.1:8080 you@box`,
+  then open `http://127.0.0.1:8080`. Fine from a laptop, awkward from a phone.
+- **Cloudflare Tunnel**, if you want a URL that works from anywhere: install
+  `cloudflared` (a different binary from `wrangler`) and point a tunnel at
+  `http://127.0.0.1:8080`. TLS and the public hostname are handled for you and
+  no inbound port opens on the box.
+- **A reverse proxy** you already run, terminating TLS.
+
+## Access model
+
+Two tiers, matching an unlisted-link app for a couple of people:
+
+- **The access key gates anything that costs CPU or creates state** — uploading,
+  exporting a mix, deleting a job. It is sent as `X-Stem-Key` and compared with
+  `hmac.compare_digest`. The browser stores it in `localStorage`.
+- **A job's audio is gated by its id**, 192 bits from `secrets.token_urlsafe`,
+  which appears in no listing. Anyone you send a `#job=…` link to can play and
+  download that job's stems without the key. That is deliberate — it is how you
+  share a result — but it means a job link is the audio.
+
+Jobs are deleted after `STEM_JOB_TTL_HOURS`, checked every 10 minutes and on
+startup.
+
+## Configuration
+
+Everything is read from the environment at startup; `setup.sh` writes `.env`
+and `run.sh` and the systemd unit both load it.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `STEM_ACCESS_KEY` | — | Required, minimum 12 characters. Startup fails without it. |
+| `STEM_ALLOW_OPEN` | `0` | Set to `1` to run with no key at all. |
+| `STEM_HOST` | `127.0.0.1` | Bind address. |
+| `STEM_PORT` | `8080` | Bind port. |
+| `STEM_DATA_DIR` | `./data` | Jobs and downloaded models. |
+| `STEM_MODEL_DIR` | `<data>/models` | Model weights. |
+| `STEM_WEB_DIR` | `./web` | Static front end. |
+| `STEM_MODEL` | `htdemucs.yaml` | Any four-stem model `audio-separator` knows. |
+| `STEM_MAX_UPLOAD_MB` | `100` | Rejected before the body is read. |
+| `STEM_MAX_DURATION_S` | `600` | Checked with ffprobe after upload. |
+| `STEM_JOB_TTL_HOURS` | `24` | Age at which a job's directory is deleted. |
+| `STEM_WORKERS` | `1` | Concurrent separations. Raising this on a 4-core box makes both jobs slower without finishing either sooner. |
+| `STEM_PREVIEW_BITRATE` | `192k` | Playback copies only; downloads are unaffected. |
+| `STEM_SEPARATOR_TIMEOUT_S` | `3600` | Separation is killed past this. |
+| `STEM_FFMPEG`, `STEM_FFPROBE`, `STEM_SEPARATOR_BIN` | from `PATH` | Explicit binary paths. |
+
+`python -m stemapp --check` prints the resolved configuration and verifies the
+external tools without starting the server.
+
+## API
+
+`K` marks routes that require `X-Stem-Key`.
+
+| | Route | |
+| --- | --- | --- |
+| `GET` | `/api/config` | Limits, stem names, accepted formats. |
+| `POST` | `/api/key` | K — verifies a key. |
+| `POST` | `/api/jobs` | K — `multipart/form-data`, field `file`. Returns the job. |
+| `GET` | `/api/jobs/{id}` | State, progress, duration, error. |
+| `DELETE` | `/api/jobs/{id}` | K — deletes the job and its files. |
+| `GET` | `/api/jobs/{id}/preview/{stem}.mp3` | Playback copy. Supports `Range`. |
+| `GET` | `/api/jobs/{id}/stems/{stem}.wav` | Lossless stem. |
+| `GET` | `/api/jobs/{id}/stems.zip` | All four, built on first request. |
+| `POST` | `/api/jobs/{id}/mix` | K — `{"gains":{…},"format":"wav"\|"mp3"}`. Returns a URL plus the measured peak and any attenuation applied. |
+| `GET` | `/api/jobs/{id}/mix/{mix}.{fmt}` | The rendered mix. |
+
+A job moves through `queued → preparing → separating → encoding → done`, or to
+`error` with a message. During `separating`, `progress` is the percentage of
+the current model pass and `separation_pass` says which pass that is —
+`htdemucs` runs the model over the track more than once and the underlying
+progress bar restarts each time.
+
+## Mixer
+
+Faders travel from −48 dB to +12 dB with unity at 0.8 of the way up; dragging
+snaps to unity, keyboard steps do not. Double-click or press Enter on a fader to
+reset it. Waveforms share one vertical scale across the four stems, so a stem
+that is genuinely quiet looks quiet.
+
+| Key | |
+| --- | --- |
+| Space | play / pause |
+| ← → | seek 5 seconds |
+| 1–4 | solo that stem |
+| Shift+1–4 | mute that stem |
+
+The monitor fader is playback only and is not part of an export.
+
+## Disk per job
+
+For a five-minute track, roughly: 210 MB of stems, 30 MB of previews, and
+another 210 MB once someone downloads the zip. The decoded source WAV is
+deleted as soon as the stems exist. Everything goes when the TTL expires.
+
+## What was measured, and what was not
+
+Measured in a 4-core x86_64 container with 15 GB of RAM:
+
+- A 20.0 s 44.1 kHz stereo file completed in **34.2 s** end to end — decode,
+  separation, 16-bit normalisation and MP3 previews. Model loading is a fixed
+  cost inside that number, so it does not scale linearly; a longer track was
+  not timed and no rate is extrapolated here.
+- Summing the four stems at unity reproduced the input with a **−20.1 dB**
+  residual at **zero sample lag**. That was a synthetic signal — sine tones and
+  filtered noise — which is nothing like the material `htdemucs` was trained
+  on, so the residual on real music will differ and was not measured.
+- Export clip protection: against a deliberately low −25 dB test ceiling the
+  renderer applied −8.41 dB and the output landed at −24.998 dBFS.
+- The browser front end was driven end to end in Chromium at 1440×900 and
+  390×844: four strips, vertical faders on desktop and horizontal on the phone
+  layout, waveforms drawn, transport advancing, mute and solo, WAV export, no
+  console errors, no CSP violations, no horizontal overflow at 390 px.
+
+Not measured: anything on ARM. The wheel availability above says the install
+will work on `aarch64`; how fast a separation runs on an Ampere A1 core is
+unknown and has to be timed on the box. No iOS Safari or Firefox run happened —
+only Chromium.
+
+## Licence
+
+MIT, see `LICENSE`. `audio-separator` and the `htdemucs` weights carry their own
+licences; check them before doing anything commercial with the output.

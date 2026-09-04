@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Stem</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-name">Stem</span>
+  </div>
+  <div class="track-meta" id="track-meta" hidden>
+    <span class="track-name" id="track-name"></span>
+    <span class="track-detail" id="track-detail"></span>
+  </div>
+  <div class="topbar-actions">
+    <button type="button" class="ghost" id="new-track-button" hidden>New track</button>
+    <button type="button" class="ghost" id="key-button">Access key</button>
+  </div>
+</header>
+
+<main>
+
+  <!-- ---------- upload ---------- -->
+  <section class="view" id="view-upload">
+    <div class="dropzone" id="dropzone">
+      <input type="file" id="file-input" accept="audio/*" class="visually-hidden">
+      <div class="dropzone-inner">
+        <div class="dropzone-icon" aria-hidden="true"></div>
+        <p class="dropzone-title">Drop a track here</p>
+        <p class="dropzone-sub">or <button type="button" class="linklike" id="browse-button">choose a file</button></p>
+      </div>
+    </div>
+    <p class="hint" id="upload-hint"></p>
+    <div class="upload-progress" id="upload-progress" hidden>
+      <div class="bar"><div class="bar-fill" id="upload-fill"></div></div>
+      <p class="mono" id="upload-status">Uploading…</p>
+    </div>
+  </section>
+
+  <!-- ---------- processing ---------- -->
+  <section class="view" id="view-processing" hidden>
+    <div class="processing-card">
+      <h2 id="processing-stage">Working</h2>
+      <div class="bar bar-lg">
+        <div class="bar-fill" id="processing-fill"></div>
+      </div>
+      <p class="mono muted" id="processing-detail"></p>
+      <p class="muted small" id="processing-note">
+        Separation runs on the server's CPU and takes longer than the track
+        itself. You can close this tab and come back to the same link.
+      </p>
+      <button type="button" class="ghost" id="processing-cancel">Cancel and start over</button>
+    </div>
+  </section>
+
+  <!-- ---------- failure ---------- -->
+  <section class="view" id="view-failed" hidden>
+    <div class="processing-card">
+      <h2 class="failed-title">That didn't work</h2>
+      <p class="mono" id="failed-message"></p>
+      <button type="button" class="primary" id="failed-retry">Try another track</button>
+    </div>
+  </section>
+
+  <!-- ---------- mixer ---------- -->
+  <section class="view view-mixer" id="view-mixer" hidden>
+
+    <div class="loading" id="mixer-loading">
+      <div class="bar"><div class="bar-fill" id="load-fill"></div></div>
+      <p class="mono muted" id="load-status">Loading stems…</p>
+    </div>
+
+    <div class="mixer" id="mixer" hidden>
+
+      <div class="transport">
+        <div class="transport-controls">
+          <button type="button" class="transport-button" id="play-button" aria-label="Play">
+            <span class="icon-play" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="transport-button small" id="stop-button" aria-label="Stop">
+            <span class="icon-stop" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="transport-button small toggle" id="loop-button" aria-pressed="false" aria-label="Loop">
+            <span class="icon-loop" aria-hidden="true"></span>
+          </button>
+        </div>
+        <div class="transport-time mono">
+          <span id="time-current">0:00</span><span class="muted"> / </span><span id="time-total" class="muted">0:00</span>
+        </div>
+        <div class="scrub" id="scrub">
+          <div class="scrub-track"><div class="scrub-fill" id="scrub-fill"></div></div>
+        </div>
+        <div class="master">
+          <span class="master-label">Monitor</span>
+          <div class="fader fader-h" id="master-fader"></div>
+          <span class="mono master-readout" id="master-readout">0.0 dB</span>
+        </div>
+      </div>
+
+      <div class="strips" id="strips"></div>
+
+      <div class="exports">
+        <div class="export-group">
+          <h3>Stems</h3>
+          <p class="muted small">Untouched separation output, 44.1 kHz 16-bit WAV.</p>
+          <a class="button-link" id="download-zip" download>Download all four (.zip)</a>
+        </div>
+        <div class="export-group">
+          <h3>Your mix</h3>
+          <p class="muted small">
+            Rendered on the server from the lossless stems using the stem
+            faders, mute and solo. The monitor fader affects playback only.
+          </p>
+          <div class="export-row">
+            <button type="button" class="primary" id="export-wav">Export WAV</button>
+            <button type="button" class="ghost" id="export-mp3">Export MP3</button>
+          </div>
+          <p class="mono small muted" id="export-status"></p>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+</main>
+
+<!-- ---------- access key ---------- -->
+<div class="scrim" id="key-dialog" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="key-title">
+    <h2 id="key-title">Access key</h2>
+    <p class="muted small">
+      Uploading and exporting need the key this server was started with.
+      It is stored in this browser only.
+    </p>
+    <input type="password" id="key-input" autocomplete="off" spellcheck="false"
+           placeholder="access key">
+    <p class="mono small error" id="key-error" hidden></p>
+    <div class="dialog-actions">
+      <button type="button" class="ghost" id="key-cancel">Cancel</button>
+      <button type="button" class="primary" id="key-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
