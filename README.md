@@ -63,6 +63,19 @@ considerably smaller; that size was not measured. Linux `aarch64` wheels are
 published for `torch`, `onnxruntime`, `numpy` and `soundfile`, so the install
 works from wheels on an ARM box with no compiler.
 
+`setup.sh` also installs `audioread` explicitly, alongside `audio-separator`
+rather than as part of it. `audio_separator/separator/uvr_lib_v5/spec_utils.py`
+imports `audioread` directly at module load, but `audio-separator`'s own
+dependency list never declares it — checked against its PyPI metadata, which
+lists `librosa>=0.10` with no upper bound and nothing else that would supply
+it. It was reaching the environment only because `librosa` used to depend on
+it too. `librosa`'s newest release, `1.0.0` — also checked directly against
+its PyPI metadata — dropped `audioread` from its own dependencies, so
+whether it ends up installed at all now depends on which `librosa` version
+pip's resolver happens to pick, which is exactly the kind of thing that
+differs between two installs of the same command on two different machines.
+Installing it ourselves removes the dependency on that resolver outcome.
+
 ## Install
 
 ```
