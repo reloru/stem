@@ -152,9 +152,30 @@ class Config:
     def jobs_dir(self) -> Path:
         return self.data_dir / "jobs"
 
+    @property
+    def numba_cache_dir(self) -> Path:
+        return self.data_dir / "numba-cache"
+
     def ensure_directories(self) -> None:
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         self.model_dir.mkdir(parents=True, exist_ok=True)
+        self.numba_cache_dir.mkdir(parents=True, exist_ok=True)
+
+        # librosa (an audio-separator dependency) JIT-compiles a few functions
+        # with numba, which by default caches the compiled output next to the
+        # source file in site-packages, falling back to a directory under
+        # $HOME if that isn't writable. Under the systemd unit's
+        # ProtectHome=read-only, both of those are locked out at once, and
+        # numba does not degrade to running uncached in that case -- it
+        # raises. Confirmed directly: reproduced the exact
+        # "cannot cache function ...: no locator available" crash by
+        # remounting a venv and $HOME read-only together with a cold numba
+        # cache, and confirmed this variable is what numba's own locator
+        # chain checks first (numba/core/caching.py, UserProvidedCacheLocator)
+        # by reading numba's installed source before relying on it here.
+        # The separator subprocess inherits this from our own environment,
+        # since it is spawned with no explicit env= override.
+        os.environ.setdefault("NUMBA_CACHE_DIR", str(self.numba_cache_dir))
 
     def missing_executables(self) -> list[str]:
         """Names of required executables that cannot be found on PATH."""

@@ -102,6 +102,20 @@ sudo systemctl daemon-reload && sudo systemctl enable --now stem
 Edit the paths and `User` in the unit if your checkout is not at
 `/home/ubuntu/stem`.
 
+The unit's `ProtectHome=read-only` combined with `ReadWritePaths=.../data`
+locks out both locations `librosa`'s `numba` JIT compiler tries for its disk
+cache (in-tree next to the source file, and a `$HOME`-based fallback) at the
+same time. Unlike a plain read-only filesystem -- where numba degrades to
+running uncached -- losing *both* candidate locations at once makes numba
+raise instead: `RuntimeError: cannot cache function '__o_fold': no locator
+available for file .../librosa/core/notation.py`, surfacing as a bare
+`audio-separator exited with code 1`. Reproduced directly by remounting a
+venv and `$HOME` read-only together in an isolated mount namespace with a
+cold numba cache, and fixed by pointing `NUMBA_CACHE_DIR` at a directory
+under `STEM_DATA_DIR` (already covered by `ReadWritePaths`) before the
+separator subprocess is ever spawned, so it inherits the setting. This needs
+no unit file changes and weakens none of the sandboxing.
+
 ## Reaching it from a phone
 
 The server binds `127.0.0.1` by default and speaks plain HTTP. Do not change
