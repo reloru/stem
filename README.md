@@ -256,6 +256,21 @@ URL scheme that isn't something to build the export path around. If exporting
 locks up, use the copied link in regular Safari rather than the installed
 icon.
 
+The viewport tag's `viewport-fit=cover` -- needed so the installed app fills
+the screen edge-to-edge instead of looking letterboxed -- draws content
+underneath the notch/Dynamic Island and status bar unless something explicitly
+reserves that space back with `env(safe-area-inset-*)`. The top bar wasn't
+doing that: reported from the field as the bar being invisible and untappable
+at rest, briefly appearing mid-drag during a pull-down overscroll and
+vanishing again on release -- the bar was rendering *behind* the status bar
+the whole time, and the drag was only ever exposing it, never fixing
+anything. Fixed by padding the top bar with `env(safe-area-inset-top)` (and
+left/right, for landscape). Verified to change nothing on every platform this
+project's own testing can reach -- Chromium has no notch to clear, so the
+added padding evaluates to its zero fallback there -- but actually clearing a
+real notch or Dynamic Island could not be confirmed in that environment and
+needed on-device confirmation.
+
 ## Disk per job
 
 For a five-minute track, roughly: 210 MB of stems, 30 MB of previews, and
