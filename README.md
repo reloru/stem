@@ -136,10 +136,20 @@ Installing removes the address bar and gives the mixer a home-screen icon —
 real screen space back on a phone. This relies on HTTPS, with one exception the W3C Secure Contexts spec carves
 out for loopback addresses: a plain SSH-forwarded `http://127.0.0.1:8080` is
 still a secure context, so the install option is available there too, tunnel
-or not. iOS Safari
-reads the `apple-mobile-web-app-*` tags in `index.html` for the same effect
-via *Add to Home Screen*, but that path was not tested — your friend is on
-Android, where it was.
+or not. iOS Safari reads the `apple-mobile-web-app-*` tags in `index.html`
+for the same effect via *Add to Home Screen*.
+
+Both platforms have now actually been used in the field, not just reasoned
+about. Android (Chrome, Galaxy S24 Ultra and Z Flip 6) worked end to end on
+first deploy: upload, separation, mixer, and WAV stem downloads, no issues
+reported. iOS (installed PWA, iPhone with Dynamic Island) surfaced two real
+bugs that plain reasoning about the manifest spec would not have caught,
+both now fixed and both covered in the Mixer section below: the top bar
+rendering invisibly behind the status bar/Dynamic Island, and a relaunch of
+the installed app losing the current job outright. A third iOS issue —
+exporting a file from inside the installed PWA can leave Safari stuck on an
+unclosable Quick Look sheet — is a confirmed WebKit limitation with no code
+fix available; see the Mixer section.
 
 ## Access model
 
@@ -332,18 +342,34 @@ killed in practice, the actual fix is changing the mixer to stream from
 `<audio>` elements instead of decoding whole buffers, not lowering the limit
 further — halving it again would start constraining ordinary song lengths.
 
-### Not measured
+### ARM, now measured in the field
 
-Anything on ARM. The wheel availability above says the install will work on
-`aarch64`; separation speed on an Ampere A1 core is unknown and has to be timed
-on the box.
+Not by this session's own tooling — no stopwatch-precise, controlled benchmark
+the way the x86_64 numbers above are — but by the same production deployment,
+consistently, across three separate runs, on an Oracle Cloud Ampere A1
+(`standard-a1-flex`, the box this project actually runs on): **roughly 3×
+realtime** for `htdemucs` separation alone (decode and encoding are fast
+`ffmpeg` steps on any hardware and don't move this number much). Two manual
+`audio-separator` CLI runs on ~3 minute tracks took ~9 minutes each. One
+app-driven run logged precisely by the job's own progress display — not an
+estimate — was still 9:06 into a 3:15 track partway through its second
+`htdemucs` pass, putting the final time at noticeably more than 2.8×. That's
+roughly 1.7× slower than the 1.75× realtime measured on the 4-core x86_64
+container above, for the same model.
 
-Anything on WebKit. Chromium covers Chrome on Android, which shares its engine.
-It does not cover Chrome on iOS: Apple's App Review Guideline 2.5.6 states
-*"Apps that browse the web must use the appropriate WebKit framework and WebKit
-JavaScript,"* with alternative-engine entitlements limited to the EU and Japan,
-so iOS Chrome is Safari's engine wearing a different icon. No Firefox run
-either.
+### WebKit, now exercised in the field
+
+Chromium testing covers Chrome on Android, which shares its engine. It does
+not cover Chrome on iOS: Apple's App Review Guideline 2.5.6 states *"Apps
+that browse the web must use the appropriate WebKit framework and WebKit
+JavaScript,"* with alternative-engine entitlements limited to the EU and
+Japan, so iOS Chrome is Safari's engine wearing a different icon. No
+automated WebKit run exists in this project — there is no Safari test
+tooling available to it — but the app has been used directly on real iOS
+hardware, which is a different and in some ways stronger check: it found two
+real bugs neither reasoning nor a Chromium-only test suite would have caught
+(both in the Mixer section above), and confirmed a third as a WebKit
+platform limitation rather than an app bug. No Firefox run either way.
 
 ## Licence
 
