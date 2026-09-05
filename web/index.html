@@ -38,7 +38,11 @@
   <!-- ---------- upload ---------- -->
   <section class="view" id="view-upload">
     <div class="dropzone" id="dropzone">
-      <input type="file" id="file-input" accept="audio/*" class="visually-hidden">
+      <!-- No `accept` filter: Android's document picker greys out files whose
+           provider-reported MIME type doesn't match "audio/*", which excludes
+           real MP3s often enough to be a routine failure, not an edge case.
+           The actual gate is server-side (ACCEPTED_SUFFIXES, then ffprobe). -->
+      <input type="file" id="file-input" class="visually-hidden">
       <div class="dropzone-inner">
         <div class="dropzone-icon" aria-hidden="true"></div>
         <p class="dropzone-title">Drop a track here</p>
