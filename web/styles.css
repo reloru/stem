@@ -65,6 +65,16 @@ p { margin: 0; }
   align-items: center;
   gap: 16px;
   padding: 12px 18px;
+  /* viewport-fit=cover draws content edge-to-edge under the notch/Dynamic
+     Island and home-indicator gutters -- required for the app to look
+     installed rather than letterboxed, but it means anything pinned to a
+     screen edge has to reclaim that space itself or render underneath the
+     system status bar, invisible and untappable except during the moment an
+     elastic overscroll drag happens to shift it into view. This is that
+     reclaiming, on the one edge this header actually touches. */
+  padding-top: calc(12px + env(safe-area-inset-top, 0px));
+  padding-left: calc(18px + env(safe-area-inset-left, 0px));
+  padding-right: calc(18px + env(safe-area-inset-right, 0px));
   border-bottom: 1px solid var(--line);
   background: var(--panel);
   position: sticky;
@@ -109,7 +119,16 @@ p { margin: 0; }
    the duration is in the transport anyway, so the detail line goes first. */
 @media (max-width: 560px) {
   .track-detail { display: none; }
-  .topbar { gap: 10px; padding: 10px 14px; }
+  /* Longhand, not shorthand `padding`: this breakpoint covers every real
+     notched phone, so a shorthand reset here would silently overwrite the
+     safe-area padding on precisely the devices that need it. */
+  .topbar {
+    gap: 10px;
+    padding-top: calc(10px + env(safe-area-inset-top, 0px));
+    padding-bottom: 10px;
+    padding-left: calc(14px + env(safe-area-inset-left, 0px));
+    padding-right: calc(14px + env(safe-area-inset-right, 0px));
+  }
   .topbar .ghost { padding: 7px 10px; font-size: 0.82rem; }
 }
 
