@@ -207,6 +207,12 @@ that is genuinely quiet looks quiet.
 
 The monitor fader is playback only and is not part of an export.
 
+**Instrumental** is a fixed-preset export next to the regular mix export:
+vocals out, everything else at unity, ignoring whatever the faders currently
+say. It reuses the same server-side mixdown path as a regular export (same
+clip protection, same lossless-stem source) with the gains hardcoded rather
+than read from the mixer state.
+
 Fader positions, mutes and solos are written to `localStorage` as you set them
 and restored when you reopen the same job. That is there for phones: a mobile
 browser discards backgrounded tabs under memory pressure, and this is an

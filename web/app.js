@@ -761,6 +761,7 @@
     $("download-zip").href = "/api/jobs/" + current.id + "/stems.zip";
     $("time-total").textContent = formatTime(engine.duration);
     $("export-status").textContent = "";
+    $("instrumental-status").textContent = "";
     $("mixer-loading").hidden = true;
     $("mixer").hidden = false;
     requestAnimationFrame(function () {
@@ -953,16 +954,29 @@
 
   /* ---------------------- export ---------------------- */
 
-  async function exportMix(format) {
-    if (!job || !engine.channels.length) return;
-    var gains = {};
-    engine.channels.forEach(function (channel) {
-      gains[channel.name] = effectiveGain(channel);
-    });
+  var ALL_EXPORT_BUTTON_IDS = ["export-wav", "export-mp3", "export-instrumental"];
 
-    $("export-status").textContent = "Rendering " + format.toUpperCase() + "…";
-    $("export-wav").disabled = true;
-    $("export-mp3").disabled = true;
+  /* `options.gains` fixes the balance regardless of the live faders (used by
+   * the instrumental export); omitted, it reads the faders/mute/solo as they
+   * currently stand, matching what's audible in the mixer right now. */
+  async function exportMix(format, options) {
+    if (!job || !engine.channels.length) return;
+    options = options || {};
+    var gains = options.gains;
+    if (!gains) {
+      gains = {};
+      engine.channels.forEach(function (channel) {
+        gains[channel.name] = effectiveGain(channel);
+      });
+    }
+    var suffix = options.suffix || "mix";
+    var statusEl = $(options.statusId || "export-status");
+
+    statusEl.textContent = "Rendering " + format.toUpperCase() + "…";
+    ALL_EXPORT_BUTTON_IDS.forEach(function (id) {
+      var button = $(id);
+      if (button) button.disabled = true;
+    });
     try {
       var result = await apiPost("/api/jobs/" + job.id + "/mix", {
         gains: gains,
@@ -973,20 +987,35 @@
         note += " · pulled back " + Math.abs(result.attenuation_db).toFixed(1) +
           " dB to stay under full scale";
       }
-      $("export-status").textContent = note;
-      download(result.url, (job.original_name || "track") + " - mix." + format);
+      statusEl.textContent = note;
+      download(result.url, (job.original_name || "track") + " - " + suffix + "." + format);
     } catch (error) {
-      $("export-status").textContent = "";
+      statusEl.textContent = "";
       if (error.unauthorised) {
         var supplied = await askForKey("Exporting needs the access key.");
-        if (supplied) exportMix(format);
+        if (supplied) exportMix(format, options);
         return;
       }
       toast(error.message, true);
     } finally {
-      $("export-wav").disabled = false;
-      $("export-mp3").disabled = false;
+      ALL_EXPORT_BUTTON_IDS.forEach(function (id) {
+        var button = $(id);
+        if (button) button.disabled = false;
+      });
     }
+  }
+
+  function exportInstrumental() {
+    if (!engine.channels.length) return;
+    var gains = {};
+    engine.channels.forEach(function (channel) {
+      gains[channel.name] = channel.name === "vocals" ? 0 : 1;
+    });
+    exportMix("wav", {
+      gains: gains,
+      suffix: "instrumental",
+      statusId: "instrumental-status"
+    });
   }
 
   /* ---------------------- keyboard ---------------------- */
@@ -1091,6 +1120,7 @@
 
     $("export-wav").addEventListener("click", function () { exportMix("wav"); });
     $("export-mp3").addEventListener("click", function () { exportMix("mp3"); });
+    $("export-instrumental").addEventListener("click", exportInstrumental);
   }
 
   function wireDialog() {

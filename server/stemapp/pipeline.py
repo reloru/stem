@@ -447,19 +447,37 @@ def build_stem_zip(stem_dir: Path, destination: Path, base_name: str) -> None:
 _JOB_PATH_RE = re.compile(
     r"(?:jobs/)?[A-Za-z0-9_-]{16,64}/(input|source|stems|preview|mixes)"
 )
+_SITE_PACKAGES_RE = re.compile(r'[^\s"]*/site-packages/')
+_MESSAGE_LIMIT = 1000
 
 
 def scrub(message: str, cfg: Config) -> str:
     """Strip server paths out of a message before the client sees it.
 
     Stage failures quote the failing tool's own stderr, which names the file it
-    was handed -- an absolute path inside the data directory. That is of no use
-    to the person who uploaded the track and should not leave the server.
+    was handed -- an absolute path inside the data directory -- and, for a
+    Python traceback, the full path to every installed package under the
+    virtualenv. Neither is of use to the person who uploaded the track, both
+    leak the server's layout and username, and both eat into the truncation
+    budget below for no diagnostic value.
+
+    A Python traceback's only truly load-bearing line is its last one -- the
+    exception type and message -- with everything above it just showing how
+    execution got there. So truncation here keeps the *end* of the message,
+    not the start: a front truncation would, and for months of this project
+    silently did, cut every deep failure off partway through the second stack
+    frame, before the actual error was ever visible anywhere it was looked at
+    -- the browser, the API response, and the job record on disk alike, since
+    all three serve this same scrubbed string.
     """
     for path in (str(cfg.data_dir), str(cfg.model_dir)):
         message = message.replace(path + "/", "").replace(path, "")
+    message = _SITE_PACKAGES_RE.sub("", message)
     message = _JOB_PATH_RE.sub(r"\1", message)
-    return " ".join(message.split())[:400]
+    message = " ".join(message.split())
+    if len(message) <= _MESSAGE_LIMIT:
+        return message
+    return "…" + message[-_MESSAGE_LIMIT:]
 
 
 def check_tools(cfg: Config) -> list[str]:

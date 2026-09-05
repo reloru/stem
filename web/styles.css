@@ -633,5 +633,5 @@ main {
   }
   .strip-toggles { margin-left: 0; }
 
-  .exports { grid-template-columns: 1fr 1fr; }
+  .exports { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
