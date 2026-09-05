@@ -585,11 +585,28 @@
     $("mixer-loading").hidden = false;
     $("track-meta").hidden = true;
     $("new-track-button").hidden = true;
+    $("copy-link-button").hidden = true;
     $("file-input").value = "";
     $("upload-progress").hidden = true;
     job = null;
     if (window.location.hash) history.replaceState(null, "", window.location.pathname);
     showView("view-upload");
+  }
+
+  /* Installed on the home screen (iOS or Android), this app has no address
+   * bar and no share/copy affordance of its own -- there is otherwise no way
+   * to hand this job to another browser or device, or even to see its URL.
+   * Falls back to showing the link in the toast itself if the clipboard
+   * write is refused (an insecure context, or the permission denied). */
+  async function copyJobLink() {
+    if (!job) return;
+    var url = location.origin + location.pathname + "#job=" + job.id;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast("Link copied — opens this job in any browser.");
+    } catch (error) {
+      toast(url);
+    }
   }
 
   /* ---------------------- upload ---------------------- */
@@ -661,6 +678,7 @@
   function showProcessing(current) {
     showView("view-processing");
     $("new-track-button").hidden = false;
+    $("copy-link-button").hidden = false;
     updateTrackMeta(current);
 
     var stage = current.stage || "Working";
@@ -733,6 +751,7 @@
 
     showView("view-mixer");
     $("new-track-button").hidden = false;
+    $("copy-link-button").hidden = false;
     $("mixer").hidden = true;
     $("mixer-loading").hidden = false;
     $("load-fill").style.width = "0%";
@@ -1150,6 +1169,7 @@
 
   function wireChrome() {
     $("new-track-button").addEventListener("click", resetToUpload);
+    $("copy-link-button").addEventListener("click", copyJobLink);
     $("failed-retry").addEventListener("click", resetToUpload);
     $("processing-cancel").addEventListener("click", async function () {
       var id = job && job.id;
@@ -1198,21 +1218,40 @@
     $("key-button").hidden = !config.requires_key;
 
     window.addEventListener("hashchange", function () { openFromHash(); });
-    if (!(await openFromHash())) showView("view-upload");
+    if (await openFromHash()) return;
+
+    // A PWA launched from its home-screen icon always lands on the bare
+    // start_url with no hash -- the manifest spec gives it nowhere else to
+    // go, so iOS and Android do not restore whatever page was open when the
+    // app was last closed. Without this fallback, every relaunch loses the
+    // job outright, even though its balance is still sitting in
+    // localStorage from the fader-memory feature. Silent on failure (no
+    // toast): the user did not navigate to a link, so an unprompted "that
+    // expired" message on a cold launch would read as an error rather than
+    // the routine cleanup it is.
+    var recent = mostRecentJobId();
+    if (recent && (await resumeJob(recent, { announceFailure: false }))) {
+      history.replaceState(null, "", window.location.pathname + "#job=" + recent);
+      return;
+    }
+    showView("view-upload");
   }
 
-  /* Open whatever job the fragment names. Changing the fragment on an already
-   * loaded page is a same-document navigation, so this runs both at boot and
-   * from the hashchange event; without the second, pasting a job link into an
-   * open tab would do nothing at all. */
-  async function openFromHash() {
-    var match = /(?:^|#|&)job=([A-Za-z0-9_-]{16,64})/.exec(window.location.hash);
-    if (!match) return false;
-    if (job && job.id === match[1] && !$("view-mixer").hidden) return true;
+  function mostRecentJobId() {
+    var all = readMixes();
+    var ids = Object.keys(all);
+    if (!ids.length) return null;
+    ids.sort(function (a, b) { return (all[b].at || 0) - (all[a].at || 0); });
+    return ids[0];
+  }
 
+  /* Shared by openFromHash (an explicit link, where a dead job is worth
+   * announcing) and the cold-launch fallback above (where it is not). */
+  async function resumeJob(jobId, options) {
+    options = options || {};
     stopPolling();
     try {
-      var existing = await apiGet("/api/jobs/" + match[1]);
+      var existing = await apiGet("/api/jobs/" + jobId);
       job = existing;
       if (existing.state === "done") { await openMixer(existing); return true; }
       if (existing.state === "error") {
@@ -1224,10 +1263,23 @@
       pollTimer = setTimeout(pollJob, 900);
       return true;
     } catch (error) {
-      toast("That link has expired.", true);
-      history.replaceState(null, "", window.location.pathname);
+      if (options.announceFailure) {
+        toast("That link has expired.", true);
+        history.replaceState(null, "", window.location.pathname);
+      }
       return false;
     }
+  }
+
+  /* Open whatever job the fragment names. Changing the fragment on an already
+   * loaded page is a same-document navigation, so this runs both at boot and
+   * from the hashchange event; without the second, pasting a job link into an
+   * open tab would do nothing at all. */
+  async function openFromHash() {
+    var match = /(?:^|#|&)job=([A-Za-z0-9_-]{16,64})/.exec(window.location.hash);
+    if (!match) return false;
+    if (job && job.id === match[1] && !$("view-mixer").hidden) return true;
+    return resumeJob(match[1], { announceFailure: true });
   }
 
   if (document.readyState === "loading") {

@@ -234,6 +234,28 @@ expensive tab to keep, so without it every adjustment would be lost the moment
 someone switched apps. The last 20 tracks are remembered; nothing leaves the
 browser.
 
+Installed as a home-screen PWA, this same data does a second job. A PWA's
+manifest `start_url` is fixed -- relaunching from the icon always lands there,
+with none of the last-open-tab restoration a normal browser tab gets, so
+without a fallback every relaunch would land back on the bare upload screen
+with no way back to a job in progress or already finished. A cold launch with
+no job in the URL now looks up the most recently touched job from that same
+`localStorage` record and resumes it automatically; only an explicit **New
+track** clears it. The **link icon** in the top bar copies that job's URL, for
+opening the same job in an ordinary browser tab or handing it to someone
+else -- there is no address bar to read it from inside an installed PWA.
+
+That second point matters on iOS specifically: exporting a file from inside
+the installed PWA can leave Safari stuck on an unclosable Quick Look-style
+sheet instead of a normal download. This is a long-standing WebKit limitation
+scoped to standalone/installed PWA mode -- the identical `download` attribute
+works cleanly in an ordinary Safari tab -- confirmed against independent
+reports spanning iOS 12 through current releases, not specific to anything
+this app does; the documented workarounds all depend on an undocumented Apple
+URL scheme that isn't something to build the export path around. If exporting
+locks up, use the copied link in regular Safari rather than the installed
+icon.
+
 ## Disk per job
 
 For a five-minute track, roughly: 210 MB of stems, 30 MB of previews, and
