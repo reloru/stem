@@ -149,6 +149,22 @@ input:focus-visible {
   padding: 8px 14px;
   font-size: 0.88rem;
 }
+
+/* Icon-only variant: same visual weight as a text ghost button, but square
+   and centered, for an action that would otherwise crowd out the track name
+   in the already-tight top bar on a phone. Selector matches the specificity
+   of the ".topbar .ghost" narrow-viewport rule below (two classes each) and
+   is declared after it, so this wins there too instead of inheriting that
+   rule's text padding. */
+.topbar-actions .icon-button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  flex: none;
+  color: var(--text);
+}
 .ghost:hover { background: var(--panel-3); }
 
 .linklike {
