@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from . import pipeline
-from .config import STEM_NAMES, Config
+from .config import Config, spec_for_model
 from .jobs import (
     STATE_DONE,
     STATE_ENCODING,
@@ -75,6 +75,10 @@ class Worker:
             self._fail(job_id, "the uploaded file is missing from disk")
             return
 
+        # The job's own model, not the server default: a job separated with a
+        # six-stem model keeps that layout even if the default changes later.
+        model = spec_for_model(job.model)
+
         self._store.update(
             job_id, state=STATE_PREPARING, started_at=time.time(), progress=None
         )
@@ -112,12 +116,18 @@ class Worker:
                 job_id, state=STATE_SEPARATING, progress=0.0, separation_pass=1
             )
             pipeline.separate(
-                source, stem_dir, self._cfg, on_progress=self._progress_sink(job_id)
+                source,
+                stem_dir,
+                self._cfg,
+                model,
+                on_progress=self._progress_sink(job_id),
             )
-            pipeline.normalise_stems(stem_dir, self._cfg)
+            pipeline.normalise_stems(stem_dir, model.stems, self._cfg)
 
             self._store.update(job_id, state=STATE_ENCODING, progress=None)
-            pipeline.encode_previews(stem_dir, preview_dir, self._cfg)
+            pipeline.encode_previews(
+                stem_dir, preview_dir, model.stems, self._cfg
+            )
         except pipeline.StageError as exc:
             self._fail(job_id, str(exc))
             return
@@ -130,7 +140,7 @@ class Worker:
             job_id,
             state=STATE_DONE,
             progress=100.0,
-            stems=list(STEM_NAMES),
+            stems=list(model.stems),
             finished_at=time.time(),
             error=None,
         )

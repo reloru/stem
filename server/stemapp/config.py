@@ -12,20 +12,101 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-# Stem identifiers used in URLs, filenames and the JSON API. Order is the
-# display order in the mixer.
-STEM_NAMES = ("vocals", "drums", "bass", "other")
 
-# audio-separator labels the outputs of a four-stem Demucs model with these
-# capitalised names. Passing the mapping to --custom_output_names forces
-# deterministic filenames instead of the default
-# "<input>_(Vocals)_<model>.wav" convention.
-SEPARATOR_STEM_LABELS = {
-    "Vocals": "vocals",
-    "Drums": "drums",
-    "Bass": "bass",
-    "Other": "other",
+@dataclass(frozen=True)
+class ModelSpec:
+    """One separation model: what it produces and what to call the outputs.
+
+    `stems` is the display order in the mixer as well as the order the mixdown
+    graph feeds ffmpeg, so it is a tuple rather than a set. `separator_labels`
+    maps audio-separator's own capitalised output labels to ours; passing the
+    mapping to --custom_output_names forces deterministic filenames instead of
+    the default "<input>_(Vocals)_<model>.wav" convention. It is a tuple of
+    pairs rather than a dict so the spec stays hashable.
+    """
+
+    filename: str
+    label: str
+    stems: tuple[str, ...]
+    separator_labels: tuple[tuple[str, str], ...]
+
+    @property
+    def output_names(self) -> dict[str, str]:
+        """The --custom_output_names payload for this model."""
+        return dict(self.separator_labels)
+
+
+# The models this server will run. Restricted to a registry rather than passing
+# STEM_MODEL through to audio-separator unchecked, because nothing downstream
+# can work without knowing a model's stem names ahead of time: they are in URLs,
+# on-disk paths, the job record and the mixer's channel list. A model that is
+# not listed here is rejected at startup rather than failing mid-job.
+#
+# htdemucs_6s carves `guitar` and `piano` out of what the four-stem model calls
+# `other`, so the two stem sets are different decompositions of the same signal,
+# not a superset relation -- a six-stem `other` is not a four-stem `other`. That
+# is why a job records the model it was separated with instead of the server
+# assuming one globally.
+#
+# The separator_labels below were read out of the installed audio-separator
+# (0.47.0) rather than guessed: DEMUCS_6_SOURCE_MAPPER in
+# architectures/demucs_separator.py keys the six sources on CommonSeparator's
+# VOCAL/DRUM/BASS/GUITAR/PIANO/OTHER_STEM constants, which are the strings
+# "Vocals", "Drums", "Bass", "Guitar", "Piano" and "Other". Casing here happens
+# not to matter -- get_stem_output_path lowercases both sides before comparing
+# -- but matching the source exactly keeps the mapping legible against it.
+MODELS: dict[str, ModelSpec] = {
+    "htdemucs.yaml": ModelSpec(
+        filename="htdemucs.yaml",
+        label="4 stems",
+        stems=("vocals", "drums", "bass", "other"),
+        separator_labels=(
+            ("Vocals", "vocals"),
+            ("Drums", "drums"),
+            ("Bass", "bass"),
+            ("Other", "other"),
+        ),
+    ),
+    "htdemucs_6s.yaml": ModelSpec(
+        filename="htdemucs_6s.yaml",
+        label="6 stems",
+        stems=("vocals", "drums", "bass", "guitar", "piano", "other"),
+        separator_labels=(
+            ("Vocals", "vocals"),
+            ("Drums", "drums"),
+            ("Bass", "bass"),
+            ("Guitar", "guitar"),
+            ("Piano", "piano"),
+            ("Other", "other"),
+        ),
+    ),
 }
+
+DEFAULT_MODEL = "htdemucs.yaml"
+
+# Every stem name any registered model can produce. Used only where a check has
+# to happen before the job -- and therefore its model -- is known.
+ALL_STEM_NAMES = frozenset(
+    name for spec in MODELS.values() for name in spec.stems
+)
+
+
+def spec_for_model(filename: str) -> ModelSpec:
+    """The spec for a model filename, falling back to the default model.
+
+    The fallback exists for job records written before a model field existed:
+    they were all separated with the four-stem model, and losing them to a
+    KeyError would be worse than assuming the only thing they could have been.
+    Uploads go through Config.resolve_model instead, which rejects an unknown
+    name outright rather than silently separating something else.
+    """
+    return MODELS.get(filename) or MODELS[DEFAULT_MODEL]
+
+
+def stems_for_model(filename: str) -> tuple[str, ...]:
+    """Ordered stem names for a model, falling back to the default model."""
+    return spec_for_model(filename).stems
+
 
 # Containers ffmpeg can decode that a user is plausibly uploading. The suffix
 # check is a fast reject; ffprobe is the real gate.
@@ -124,6 +205,13 @@ class Config:
         if access_key and len(access_key) < 12:
             raise ConfigError("STEM_ACCESS_KEY must be at least 12 characters.")
 
+        model_filename = os.environ.get("STEM_MODEL", DEFAULT_MODEL)
+        if model_filename not in MODELS:
+            raise ConfigError(
+                f"STEM_MODEL={model_filename!r} is not one of the models this "
+                f"server knows the stem layout for: {', '.join(sorted(MODELS))}."
+            )
+
         return cls(
             host=os.environ.get("STEM_HOST", "127.0.0.1"),
             port=_env_int("STEM_PORT", 8080),
@@ -134,7 +222,7 @@ class Config:
             max_upload_bytes=_env_int("STEM_MAX_UPLOAD_MB", 100) * 1024 * 1024,
             max_duration_seconds=_env_int("STEM_MAX_DURATION_S", 300),
             job_ttl_seconds=_env_int("STEM_JOB_TTL_HOURS", 24) * 3600,
-            model_filename=os.environ.get("STEM_MODEL", "htdemucs.yaml"),
+            model_filename=model_filename,
             model_dir=Path(
                 os.environ.get("STEM_MODEL_DIR") or (data_dir / "models")
             ).expanduser(),
@@ -143,7 +231,11 @@ class Config:
             ),
             ffmpeg_bin=_resolve_executable("ffmpeg", "STEM_FFMPEG"),
             ffprobe_bin=_resolve_executable("ffprobe", "STEM_FFPROBE"),
-            preview_bitrate=os.environ.get("STEM_PREVIEW_BITRATE", "192k"),
+            # Previews are mono (see pipeline.encode_previews), so 128k here
+            # spends more bits per channel than the 192k stereo default it
+            # replaces while holding six stems of a five-minute track to the
+            # same download the old four stereo stems cost.
+            preview_bitrate=os.environ.get("STEM_PREVIEW_BITRATE", "128k"),
             separator_timeout_seconds=_env_int("STEM_SEPARATOR_TIMEOUT_S", 3600),
             worker_count=_env_int("STEM_WORKERS", 1),
         )
@@ -155,6 +247,28 @@ class Config:
     @property
     def numba_cache_dir(self) -> Path:
         return self.data_dir / "numba-cache"
+
+    @property
+    def default_model(self) -> ModelSpec:
+        """The model an upload gets when it does not name one."""
+        return MODELS[self.model_filename]
+
+    def resolve_model(self, requested: str | None) -> ModelSpec:
+        """The model an upload asked for, or the default when it asked for none.
+
+        Raises ConfigError for a name that is not registered, so the caller can
+        reject the upload rather than starting a job whose stem layout nothing
+        downstream would agree on.
+        """
+        if not requested:
+            return self.default_model
+        spec = MODELS.get(requested)
+        if spec is None:
+            raise ConfigError(
+                f"{requested!r} is not one of the available models: "
+                f"{', '.join(sorted(MODELS))}."
+            )
+        return spec
 
     def ensure_directories(self) -> None:
         self.jobs_dir.mkdir(parents=True, exist_ok=True)

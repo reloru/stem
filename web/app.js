@@ -16,8 +16,15 @@
     vocals: "#ffb454",
     drums: "#ff6b81",
     bass: "#5aa9ff",
+    guitar: "#c792ea",
+    piano: "#8ce99a",
     other: "#4ecdc4"
   };
+
+  // Beyond four strips the desktop console wraps instead of narrowing: six
+  // columns inside the 1180px shell would leave each one too tight for a
+  // waveform and a fader side by side.
+  var WIDE_STRIP_COLUMNS = 3;
 
   // Fader travel in decibels. Unity sits at 0.8 of the way up, which leaves
   // 12 dB of boost above it and a usable amount of resolution below.
@@ -323,7 +330,14 @@
       case "PageDown": delta = -this.step * 10; break;
       case "Home": this.set(0); event.preventDefault(); return;
       case "End": this.set(1); event.preventDefault(); return;
-      case "Enter": case " ": this.set(this.defaultValue); event.preventDefault(); return;
+      /* Enter only, deliberately not Space. This handler runs on the fader
+       * element and calls preventDefault() but not stopPropagation(), while
+       * the document-level shortcut handler explicitly lets Space through for
+       * role="slider" targets so that play/pause still works with a fader
+       * focused -- and pointerdown focuses the fader you just dragged. Both
+       * listeners firing meant one Space press reset the fader to unity *and*
+       * toggled transport. */
+      case "Enter": this.set(this.defaultValue); event.preventDefault(); return;
       default: return;
     }
     this.set(this.value + delta);
@@ -562,6 +576,7 @@
    * ------------------------------------------------------------------ */
 
   var config = null;
+  var selectedModel = null;
   var job = null;
   var pollTimer = null;
   var stemFaders = [];
@@ -609,6 +624,56 @@
     }
   }
 
+  /* ---------------------- model picker ---------------------- */
+
+  /* Which model separates a track is a per-upload choice, not a server-wide
+   * setting: the six-stem model costs noticeably more CPU and demucs documents
+   * its piano source as bleeding-prone, so it is worth asking for rather than
+   * imposing. Options and their stem lists come from /api/config, so adding a
+   * model server-side needs no change here. */
+  function buildModelPicker() {
+    var container = $("model-options");
+    var caption = $("model-stems");
+    var models = (config && config.models) || [];
+    container.textContent = "";
+
+    // One model is not a choice; hide the control rather than show a single
+    // button that does nothing.
+    if (models.length < 2) {
+      $("model-picker").hidden = true;
+      selectedModel = models.length ? models[0].id : null;
+      return;
+    }
+    $("model-picker").hidden = false;
+
+    var entries = [];
+    function select(id) {
+      selectedModel = id;
+      entries.forEach(function (entry) {
+        entry.button.setAttribute("aria-pressed", String(entry.id === id));
+        if (entry.id === id) caption.textContent = entry.stems.join(" · ");
+      });
+    }
+
+    models.forEach(function (model) {
+      var button = make("button", "model-button", model.label);
+      button.type = "button";
+      button.setAttribute("aria-pressed", "false");
+      button.addEventListener("click", function () { select(model.id); });
+      container.appendChild(button);
+      entries.push({
+        id: model.id,
+        button: button,
+        stems: model.stems || []
+      });
+    });
+
+    var hasDefault = models.some(function (model) {
+      return model.id === config.default_model;
+    });
+    select(hasDefault ? config.default_model : models[0].id);
+  }
+
   /* ---------------------- upload ---------------------- */
 
   function uploadFile(file) {
@@ -620,6 +685,9 @@
     }
 
     var form = new FormData();
+    // Before the file part so the server has it without buffering the upload,
+    // though it does not depend on the order.
+    if (selectedModel) form.append("model", selectedModel);
     form.append("file", file, file.name);
 
     var request = new XMLHttpRequest();
@@ -794,6 +862,15 @@
     container.textContent = "";
     strips = [];
     stemFaders = [];
+
+    // Read by the desktop grid; ignored by the phone layout, which is a
+    // single column at any stem count.
+    container.style.setProperty(
+      "--strip-cols",
+      String(engine.channels.length > 4
+        ? WIDE_STRIP_COLUMNS
+        : engine.channels.length || 4)
+    );
 
     engine.channels.forEach(function (channel, index) {
       var colour = STEM_COLOURS[channel.name] || "#6ea8fe";
@@ -1060,7 +1137,7 @@
     if (event.key === "ArrowLeft") { seek(currentTime() - 5); event.preventDefault(); return; }
     if (event.key === "ArrowRight") { seek(currentTime() + 5); event.preventDefault(); return; }
 
-    var index = "1234".indexOf(event.key);
+    var index = "123456".indexOf(event.key);
     if (index >= 0 && index < engine.channels.length) {
       var channel = engine.channels[index];
       var strip = strips[index];
@@ -1209,6 +1286,8 @@
       toast("Could not reach the server: " + error.message, true);
       return;
     }
+
+    buildModelPicker();
 
     $("upload-hint").textContent =
       config.accepted_suffixes.map(function (s) { return s.slice(1); }).join(" ") +

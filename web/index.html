@@ -56,6 +56,12 @@
         <p class="dropzone-sub">or <button type="button" class="linklike" id="browse-button">choose a file</button></p>
       </div>
     </div>
+    <!-- Built from /api/config rather than hardcoded, so the server stays the
+         one place that decides which models exist and what each produces. -->
+    <div class="model-picker" id="model-picker" role="group" aria-label="Separation model">
+      <div class="model-options" id="model-options"></div>
+      <p class="model-stems mono muted" id="model-stems"></p>
+    </div>
     <p class="hint" id="upload-hint"></p>
     <div class="upload-progress" id="upload-progress" hidden>
       <div class="bar"><div class="bar-fill" id="upload-fill"></div></div>

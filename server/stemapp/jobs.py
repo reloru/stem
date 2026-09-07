@@ -27,7 +27,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .config import STEM_NAMES
+from .config import ALL_STEM_NAMES, DEFAULT_MODEL
 
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 
@@ -67,6 +67,11 @@ class Job:
     updated_at: float
     state: str = STATE_QUEUED
     original_name: str = ""
+    # The model this job was separated with, which fixes its stem layout for
+    # the life of the job. Defaulted rather than required so job.json files
+    # written before this field existed still parse in load_from_disk: they
+    # predate any choice, so the four-stem model is the only thing they can be.
+    model: str = DEFAULT_MODEL
     input_bytes: int = 0
     duration_seconds: float | None = None
     sample_rate: int | None = None
@@ -109,13 +114,20 @@ class JobStore:
             raise ValueError(f"invalid job id: {job_id!r}")
         return self._dir / job_id
 
+    # These check against every stem name any registered model can produce,
+    # which is what makes the path safe to build -- the set is closed and
+    # contains no separator or traversal sequence. Whether a stem belongs to
+    # *this* job is a different question, answered by the request handler
+    # against the job's own model, since the store has no reason to know which
+    # models exist.
+
     def stem_path(self, job_id: str, stem: str) -> Path:
-        if stem not in STEM_NAMES:
+        if stem not in ALL_STEM_NAMES:
             raise ValueError(f"unknown stem: {stem!r}")
         return self.job_dir(job_id) / "stems" / f"{stem}.wav"
 
     def preview_path(self, job_id: str, stem: str) -> Path:
-        if stem not in STEM_NAMES:
+        if stem not in ALL_STEM_NAMES:
             raise ValueError(f"unknown stem: {stem!r}")
         return self.job_dir(job_id) / "preview" / f"{stem}.mp3"
 
@@ -156,7 +168,7 @@ class JobStore:
                     self._persist(job)
                 self._jobs[job.id] = job
 
-    def create(self, original_name: str) -> Job:
+    def create(self, original_name: str, model: str = DEFAULT_MODEL) -> Job:
         now = time.time()
         with self._lock:
             job_id = new_job_id()
@@ -167,6 +179,7 @@ class JobStore:
                 created_at=now,
                 updated_at=now,
                 original_name=original_name,
+                model=model,
             )
             self.job_dir(job_id).mkdir(parents=True, exist_ok=True)
             self._jobs[job_id] = job

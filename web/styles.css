@@ -251,6 +251,39 @@ main {
   text-align: center;
 }
 
+/* ---------- model picker ---------- */
+
+.model-picker {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-options { display: flex; gap: 8px; }
+
+/* Same pressed/unpressed idiom as the mixer's mute and solo buttons, sized
+   for a word rather than a letter. --accent rather than --stem because there
+   is no stem in scope on the upload screen. */
+.model-button {
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 8px 18px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+.model-button:hover { background: var(--panel-3); }
+.model-button[aria-pressed="true"] {
+  color: #071019;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.model-stems { font-size: 0.78rem; text-align: center; }
+
 .upload-progress { margin-top: 18px; }
 
 /* ---------- progress bars ---------- */
@@ -634,9 +667,13 @@ main {
   .transport-time { text-align: left; }
   .master { width: 260px; }
 
+  /* Column count comes from the stem count, set on the element by
+     buildStrips: four stems stay one row across, six wrap to 3x2. auto-fit
+     was the alternative and lays six out as 5+1 at this container width,
+     which reads as a mistake rather than a layout. */
   .strips {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(var(--strip-cols, 4), minmax(0, 1fr));
     gap: 14px;
     align-items: stretch;
   }
