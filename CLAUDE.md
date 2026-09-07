@@ -77,7 +77,7 @@ a stranger cloning the repo.
   covers well (e.g. "keep commands short" is a global rule, restated above
   only because it's load-bearing for how you'll actually talk to Reed).
 
-## Everything that's landed, in order (9 PRs, all squash-merged to `main`)
+## Everything that's landed, in order (all squash-merged to `main`)
 
 1. **Initial build.** Python stdlib HTTP server (`http.server`, no
    framework), hand-rolled streaming multipart parser (`cgi` is gone in
@@ -166,6 +166,26 @@ a stranger cloning the repo.
    after this fix shipped — one of the only things in this whole project
    that got genuine on-hardware iOS confirmation rather than staying an
    documented-but-unverified caveat.
+10. **Documented the field results.** README updated with the ARM throughput
+    numbers and the WebKit findings above; this file added.
+11. **Six-stem separation, per-job model choice, mono previews, and the first
+    tests.** Reed's friend asked for guitar and piano, which is `htdemucs_6s`.
+    `STEM_NAMES` — a hardcoded four-tuple read at 16 sites across four modules
+    — became a model registry in `config.py`, and a job now records which model
+    separated it, so its stem layout is fixed for its lifetime rather than
+    read from a server-wide setting. The model is chosen per upload from a
+    picker on the upload screen, because six stems costs more CPU and demucs'
+    own README calls its piano source bleeding-prone; forcing it on every
+    track would have been wrong. **Previews went mono**, which is what made
+    six stems fit a phone at all — six stereo stems at the 300 s cap project
+    to ~635 MB of decoded `AudioBuffer` against an envelope already near
+    600 MB, while six mono stems come to ~318 MB, less than the four stereo
+    stems that shipped before. Downloads were never touched: stems, the zip
+    and every rendered mix are still stereo, summed server-side from the
+    lossless files the preview encoder only reads. Also fixed a latent bug
+    where Space on a focused fader reset it *and* toggled transport (two
+    handlers, `preventDefault()` without `stopPropagation()`), and added
+    `tests/` plus `test.sh` — see below.
 
 ## Patterns worth knowing before you touch this repo again
 
@@ -222,6 +242,31 @@ ask, or check, rather than assume.
 
 ## Testing infrastructure that already exists (don't rebuild it)
 
+**There is a committed test suite now: `tests/`, run by `bash test.sh`.** Run
+it before touching anything and again before pushing. It is stdlib-only by
+design so it works anywhere, including the box. `tests/support.py` builds a
+`Config` directly rather than through `from_env`, and assembles multipart
+bodies, so a new test rarely needs fixtures of its own. What it deliberately
+does not cover is anything requiring ffmpeg or the separator — that is still
+verified by hand, using the pattern below.
+
+The six-stem work verified the ffmpeg-dependent half like this, and the same
+approach will work again: generate synthetic stems with `ffmpeg -f lavfi -i
+sine=...` (note that `sine` emits at **−18.06 dBFS**, not full scale — a
+fixture built assuming full scale will be ~38 dB too quiet to trigger clip
+protection, which cost a round here), call `pipeline` functions directly, and
+compare against an independently-invoked ffmpeg reference rather than just
+checking the call succeeded. The six-stem mixdown was confirmed bit-for-bit
+against a separate `amix=normalize=0` run this way.
+
+For the browser half without the 6 GB separator install: write a
+`data/jobs/<id>/` by hand with a `state: "done"` `job.json`, pre-made stems
+and previews, and point `STEM_SEPARATOR_BIN` at a two-line shell stub that
+answers `--version` so `check_tools` passes. The server then serves a real
+mixer over real fixtures. Scripts for all of this were scratchpad-only and are
+gone; they are maybe an hour to rebuild and the shapes above are the whole
+recipe.
+
 This session installed `cloudflared` and `librsvg2-bin` (for icon
 rasterization) directly into its own sandbox — those aren't part of the
 repo and won't persist to a fresh session, but installing them again is
@@ -271,8 +316,21 @@ checking that the request succeeded.
    revisit this unprompted; if it comes up again, the mechanism
    (`beforeinstallprompt` + `preventDefault()`, documented since Chrome 76)
    is already known and doesn't need re-researching.
-5. **No CI exists.** Every "verified" claim in this project's PR history was
-   verified by this session running things directly, by hand, before
-   pushing — there is no automated check that will catch a regression later.
-   If that ever changes, update the PR-workflow guidance in this file too,
-   since it currently assumes there's nothing to wait on.
+5. **Tests exist now; CI still does not, deliberately.** `bash test.sh` runs a
+   stdlib `unittest` suite (95 tests) over the multipart parser, `Range`
+   parsing, filename sanitisation, error scrubbing, the mixdown filter graph
+   at both stem counts, config and model resolution, and the job store. It
+   needs no ffmpeg, no separator, no network and no data directory —
+   specifically so Reed can run it on the box between `git pull` and
+   `systemctl restart`, on the box's real 3.12, which no sandbox here has had.
+   Reed chose no GitHub Actions workflow: one human participant, no reviewers,
+   no auto-deploy, and nothing in the process that would consume a status
+   surface. The PR guidance in the operator's global file therefore still
+   holds unchanged — there is nothing to wait on. Revisit that if Actions is
+   ever added. Everything the suite does *not* cover, meaning anything that
+   touches ffmpeg or the separator, is still verified by hand before pushing.
+6. **`htdemucs_6s` throughput on ARM is unmeasured.** The four-stem ~3×
+   realtime figure is a floor for the larger model, not an estimate of it. The
+   only six-stem timing that exists is a 6-second clip taking 38.5 s on
+   x86_64, which is model-loading cost and says nothing about throughput. Get
+   a real number off the box before planning around one.

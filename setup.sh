@@ -76,13 +76,20 @@ set -a
 # shellcheck disable=SC1091
 . ./.env
 set +a
-model="${STEM_MODEL:-htdemucs.yaml}"
 model_dir="${STEM_MODEL_DIR:-$here/data/models}"
 mkdir -p "$model_dir"
 
-note "fetching the $model weights into $model_dir"
-./.venv/bin/audio-separator --download_model_only -m "$model" --model_file_dir "$model_dir" \
-  || fail "the model download failed; check network access from this machine."
+# Asked of the registry rather than listed here, so adding a model to
+# config.MODELS is the only edit needed to have setup fetch its weights.
+models="$(PYTHONPATH="$here/server" ./.venv/bin/python -c \
+  'from stemapp.config import MODELS; print(" ".join(MODELS))')" \
+  || fail "could not read the model list from stemapp.config."
+
+for model in $models; do
+  note "fetching the $model weights into $model_dir"
+  ./.venv/bin/audio-separator --download_model_only -m "$model" --model_file_dir "$model_dir" \
+    || fail "downloading $model failed; check network access from this machine."
+done
 
 # ---- verify --------------------------------------------------------------
 

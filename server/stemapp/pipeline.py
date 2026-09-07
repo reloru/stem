@@ -18,7 +18,7 @@ import zipfile
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
-from .config import MIX_FORMATS, SEPARATOR_STEM_LABELS, STEM_NAMES, Config
+from .config import MIX_FORMATS, Config, ModelSpec
 
 # tqdm renders "  45%|####      | 45/100" and rewrites the line with \r.
 _PERCENT_RE = re.compile(rb"(\d{1,3})%")
@@ -201,6 +201,7 @@ def separate(
     source: Path,
     output_dir: Path,
     cfg: Config,
+    model: ModelSpec,
     on_progress: ProgressCallback | None = None,
 ) -> None:
     """Run the separation model, writing one WAV per stem into output_dir."""
@@ -209,7 +210,7 @@ def separate(
         cfg.separator_bin,
         str(source),
         "--model_filename",
-        cfg.model_filename,
+        model.filename,
         "--model_file_dir",
         str(cfg.model_dir),
         "--output_dir",
@@ -217,7 +218,7 @@ def separate(
         "--output_format",
         "WAV",
         "--custom_output_names",
-        json.dumps(SEPARATOR_STEM_LABELS),
+        json.dumps(model.output_names),
         "--log_level",
         "info",
     ]
@@ -228,9 +229,11 @@ def separate(
     )
 
     missing = [
-        name for name in STEM_NAMES if not (output_dir / f"{name}.wav").is_file()
+        name for name in model.stems if not (output_dir / f"{name}.wav").is_file()
     ]
     if missing:
+        # Naming what it did write is what makes a wrong --custom_output_names
+        # mapping self-diagnosing: the real labels are in the filenames.
         produced = sorted(p.name for p in output_dir.glob("*"))
         raise StageError(
             "separation did not produce "
@@ -238,14 +241,18 @@ def separate(
         )
 
 
-def normalise_stems(stem_dir: Path, cfg: Config) -> None:
+def normalise_stems(stem_dir: Path, stems: Sequence[str], cfg: Config) -> None:
     """Re-encode each stem to 16-bit 44.1 kHz stereo.
 
     The separator's WAV output can be 32-bit float depending on the model
     backend. Pinning to 16-bit halves the download size and is the format a
     DAW expects for delivered stems.
+
+    These are the files every download serves -- individual stems, the zip and
+    every rendered mix -- so they stay stereo regardless of what the previews
+    below do.
     """
-    for name in STEM_NAMES:
+    for name in stems:
         original = stem_dir / f"{name}.wav"
         converted = stem_dir / f"{name}.norm.wav"
         _run(
@@ -270,16 +277,28 @@ def normalise_stems(stem_dir: Path, cfg: Config) -> None:
         converted.replace(original)
 
 
-def encode_previews(stem_dir: Path, preview_dir: Path, cfg: Config) -> None:
+def encode_previews(
+    stem_dir: Path, preview_dir: Path, stems: Sequence[str], cfg: Config
+) -> None:
     """Produce the lossy copies the browser mixer streams.
 
     Four lossless stems of a four-minute track are roughly 170 MB; MP3 is the
     only lossy format `decodeAudioData` handles on every current browser
     including iOS Safari, so previews are MP3 regardless of what else is
     available.
+
+    Mono (`-ac 1`). The mixer decodes every preview into an AudioBuffer, whose
+    cost is fixed by the format at 4 bytes per sample per channel at the
+    AudioContext's rate -- so a stereo preview costs exactly twice a mono one to
+    hold, and six stereo stems at the duration cap exceed the memory envelope a
+    phone was already near with four. Halving it is what lets a six-stem job
+    open on a phone at the same 300 s cap as a four-stem one. This affects
+    monitoring only: a hard-panned stem sounds centred while the faders are
+    being set. Nothing downloadable passes through here -- stems, the zip and
+    every rendered mix come from the stereo files normalise_stems wrote.
     """
     preview_dir.mkdir(parents=True, exist_ok=True)
-    for name in STEM_NAMES:
+    for name in stems:
         _run(
             [
                 cfg.ffmpeg_bin,
@@ -289,6 +308,8 @@ def encode_previews(stem_dir: Path, preview_dir: Path, cfg: Config) -> None:
                 "-y",
                 "-i",
                 str(stem_dir / f"{name}.wav"),
+                "-ac",
+                "1",
                 "-c:a",
                 "libmp3lame",
                 "-b:a",
@@ -299,17 +320,21 @@ def encode_previews(stem_dir: Path, preview_dir: Path, cfg: Config) -> None:
         )
 
 
-def _mix_graph(stem_dir: Path, gains: dict[str, float]) -> tuple[list[str], list[str]]:
+def _mix_graph(
+    stem_dir: Path, stems: Sequence[str], gains: dict[str, float]
+) -> tuple[list[str], list[str]]:
     """Build the ffmpeg inputs and the per-stem gain + sum filter chain.
 
     `amix` with normalize=0 sums its inputs rather than dividing by the input
     count. That is what recombining stems requires: with every fader at unity
-    the sum has to reproduce the original mix, not a quarter of it.
+    the sum has to reproduce the original mix, not a fraction of it -- and the
+    fraction would otherwise change with the stem count, so normalize=0 is what
+    makes a six-stem sum behave the same as a four-stem one.
     """
     inputs: list[str] = []
     filters: list[str] = []
     labels: list[str] = []
-    for index, name in enumerate(STEM_NAMES):
+    for index, name in enumerate(stems):
         inputs.extend(["-i", str(stem_dir / f"{name}.wav")])
         gain = max(0.0, min(4.0, float(gains.get(name, 1.0))))
         label = f"g{index}"
@@ -323,7 +348,7 @@ def _mix_graph(stem_dir: Path, gains: dict[str, float]) -> tuple[list[str], list
 
 
 def measure_mix_peak(
-    stem_dir: Path, gains: dict[str, float], cfg: Config
+    stem_dir: Path, stems: Sequence[str], gains: dict[str, float], cfg: Config
 ) -> float:
     """Peak level of the summed mix in dBFS, measured before any clipping.
 
@@ -331,7 +356,7 @@ def measure_mix_peak(
     scale is reported as a positive number instead of being clamped by an
     integer sample format.
     """
-    inputs, filters = _mix_graph(stem_dir, gains)
+    inputs, filters = _mix_graph(stem_dir, stems, gains)
     filters.append(
         "[summed]aformat=sample_fmts=fltp,"
         "astats=measure_perchannel=none:measure_overall=Peak_level[out]"
@@ -360,6 +385,7 @@ def measure_mix_peak(
 
 def render_mix(
     stem_dir: Path,
+    stems: Sequence[str],
     gains: dict[str, float],
     destination: Path,
     cfg: Config,
@@ -384,11 +410,11 @@ def render_mix(
     _, codec_args = MIX_FORMATS[output_format]
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    peak_db = measure_mix_peak(stem_dir, gains, cfg)
+    peak_db = measure_mix_peak(stem_dir, stems, gains, cfg)
     attenuation_db = min(0.0, ceiling_db - peak_db) if peak_db > ceiling_db else 0.0
     scale = 10.0 ** (attenuation_db / 20.0)
 
-    inputs, filters = _mix_graph(stem_dir, gains)
+    inputs, filters = _mix_graph(stem_dir, stems, gains)
     filters.append(f"[summed]volume={scale:.8f}[out]")
 
     # Two browsers asking for the same balance at the same time would have
@@ -427,15 +453,17 @@ def render_mix(
     }
 
 
-def build_stem_zip(stem_dir: Path, destination: Path, base_name: str) -> None:
-    """Package all four stems, named after the original upload."""
+def build_stem_zip(
+    stem_dir: Path, stems: Sequence[str], destination: Path, base_name: str
+) -> None:
+    """Package this job's stems, named after the original upload."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = destination.with_name(
         f"{destination.stem}.{os.getpid()}.{threading.get_ident()}.zip"
     )
     try:
         with zipfile.ZipFile(staging, "w", zipfile.ZIP_STORED) as archive:
-            for name in STEM_NAMES:
+            for name in stems:
                 source = stem_dir / f"{name}.wav"
                 if source.is_file():
                     archive.write(source, f"{base_name}/{name}.wav")

@@ -23,7 +23,14 @@ from pathlib import Path
 from typing import Callable
 
 from . import multipart, pipeline
-from .config import ACCEPTED_SUFFIXES, MIX_FORMATS, STEM_NAMES, Config
+from .config import (
+    ACCEPTED_SUFFIXES,
+    MIX_FORMATS,
+    MODELS,
+    Config,
+    ConfigError,
+    stems_for_model,
+)
 from .jobs import STATE_DONE, JobStore, is_valid_job_id
 from .worker import Worker
 
@@ -269,12 +276,24 @@ class StemHandler(BaseHTTPRequestHandler):
         self._json(
             HTTPStatus.OK,
             {
-                "stems": list(STEM_NAMES),
+                # The server is the source of truth for what models exist and
+                # what each produces; the upload picker is built from this.
+                "models": [
+                    {
+                        "id": spec.filename,
+                        "label": spec.label,
+                        "stems": list(spec.stems),
+                    }
+                    for spec in MODELS.values()
+                ],
+                # No top-level stem list: with the model chosen per job there
+                # is no single global one, and a field that only described the
+                # default would drift into being read as if it described all.
+                "default_model": self.cfg.model_filename,
                 "max_upload_mb": self.cfg.max_upload_bytes // (1024 * 1024),
                 "max_duration_seconds": self.cfg.max_duration_seconds,
                 "job_ttl_hours": self.cfg.job_ttl_seconds // 3600,
                 "requires_key": not self.cfg.open_access,
-                "model": self.cfg.model_filename,
                 "accepted_suffixes": sorted(ACCEPTED_SUFFIXES),
                 "mix_formats": sorted(MIX_FORMATS),
                 "queue_depth": self.worker.pending,
@@ -343,10 +362,21 @@ class StemHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.BAD_REQUEST, "No audio file was attached.")
             return
 
+        # Resolved after parsing rather than at create() because a form field
+        # may legally arrive after the file part, and the job directory has to
+        # exist before the file part can be streamed into it.
+        try:
+            model = self.cfg.resolve_model(result.fields.get("model"))
+        except ConfigError as exc:
+            self.store.delete(job.id)
+            self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+
         self.store.update(
             job.id,
             original_name=safe_base_name(captured.get("filename", "track")),
             input_bytes=upload.size,
+            model=model.filename,
         )
         self.worker.submit(job.id)
         job = self.store.get(job.id)
@@ -372,7 +402,7 @@ class StemHandler(BaseHTTPRequestHandler):
         job = self._done_job(job_id)
         if job is None:
             return
-        if stem not in STEM_NAMES:
+        if stem not in stems_for_model(job.model):
             self._error(HTTPStatus.NOT_FOUND, "No such stem.")
             return
         self._send_file(self.store.preview_path(job_id, stem), cache_seconds=3600)
@@ -381,7 +411,7 @@ class StemHandler(BaseHTTPRequestHandler):
         job = self._done_job(job_id)
         if job is None:
             return
-        if stem not in STEM_NAMES:
+        if stem not in stems_for_model(job.model):
             self._error(HTTPStatus.NOT_FOUND, "No such stem.")
             return
         self._send_file(
@@ -397,7 +427,10 @@ class StemHandler(BaseHTTPRequestHandler):
         archive = self.store.zip_path(job_id)
         if not archive.is_file():
             pipeline.build_stem_zip(
-                self.store.job_dir(job_id) / "stems", archive, job.original_name
+                self.store.job_dir(job_id) / "stems",
+                stems_for_model(job.model),
+                archive,
+                job.original_name,
             )
         self._send_file(
             archive,
@@ -421,8 +454,9 @@ class StemHandler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.BAD_REQUEST, "Expected a 'gains' object.")
             return
 
+        stems = stems_for_model(job.model)
         gains: dict[str, float] = {}
-        for name in STEM_NAMES:
+        for name in stems:
             value = raw_gains.get(name, 1.0)
             if not isinstance(value, (int, float)) or value != value:
                 self._error(
@@ -460,6 +494,7 @@ class StemHandler(BaseHTTPRequestHandler):
             try:
                 measurement = pipeline.render_mix(
                     self.store.job_dir(job_id) / "stems",
+                    stems,
                     gains,
                     destination,
                     self.cfg,

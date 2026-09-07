@@ -1,29 +1,51 @@
 # stem
 
-Upload a track, get its four stems, adjust them in a browser mixer, download
-what you made. Self-hosted: the audio never leaves the machine you run this on.
+Upload a track, get its stems, adjust them in a browser mixer, download what
+you made. Self-hosted: the audio never leaves the machine you run this on.
 
-Four stems come out — `vocals`, `drums`, `bass`, `other` — as 44.1 kHz 16-bit
-stereo WAV, individually or as one zip. The mixer plays all four in sync with a
-fader, mute and solo per stem; exporting renders the balance server-side from
-the lossless stems, so nothing you download has been through the lossy copies
-the browser uses for playback.
+Two separations are offered, chosen per track at upload:
+
+| | Stems |
+| --- | --- |
+| **4 stems** (`htdemucs`) | `vocals` `drums` `bass` `other` |
+| **6 stems** (`htdemucs_6s`) | `vocals` `drums` `bass` `guitar` `piano` `other` |
+
+They are different decompositions rather than one extending the other: the
+six-stem model carves `guitar` and `piano` out of what the four-stem model
+calls `other`, so a six-stem `other` is not a four-stem `other`. Both sum back
+to the source. A job records which model separated it and keeps that layout
+for its lifetime.
+
+Stems come out as 44.1 kHz 16-bit stereo WAV, individually or as one zip. The
+mixer plays them in sync with a fader, mute and solo per stem; exporting
+renders the balance server-side from the lossless stems, so nothing you
+download has been through the lossy copies the browser uses for playback.
+
+**On the six-stem model's quality.** demucs' own README reports: *"Quick
+testing seems to show okay quality for `guitar`, but a lot of bleeding and
+artifacts for the `piano` source."* That is the model authors' assessment, not
+a limitation of this app. Six stems also costs more CPU than four, which is
+why it is a per-track choice rather than the default.
 
 ## How it works
 
 ```
 upload ──▶ ffmpeg ──▶ audio-separator ──▶ ffmpeg ──▶ ffmpeg
-           decode      htdemucs            16-bit    192 kbps MP3
-           44.1k/16    4 × WAV             normalise  previews
-                                                          │
-                          browser ◀── 4 × MP3 ◀────────────┘
-                          Web Audio: 4 sources ▶ 4 gains ▶ monitor ▶ out
+           decode      htdemucs[_6s]       16-bit    128 kbps MONO
+           44.1k/16    4 or 6 × WAV        stereo    MP3 previews
+                                           normalise      │
+                          browser ◀── N × MP3 ◀────────────┘
+                          Web Audio: N sources ▶ N gains ▶ monitor ▶ out
                                                           │
                           export ──▶ POST gains ──▶ ffmpeg measures the summed
                                                     peak, applies one constant
                                                     attenuation if it would
                                                     clip, then sums to WAV/MP3
 ```
+
+The previews the browser streams are mono; everything you can download —
+individual stems, the zip, every rendered mix — is stereo. See *The mixer's
+memory cost* below for why.
 
 Separation is neural, so a model and a runtime are unavoidable — that is the
 one dependency this project has. Everything else is the Python standard library
@@ -52,7 +74,8 @@ applied.
 
 - Python 3.10 or newer (3.12 on Ubuntu 24.04 is fine)
 - `ffmpeg` and `ffprobe` — `sudo apt install -y ffmpeg`
-- Disk for the virtualenv, plus 81 MB of model weights and job storage
+- Disk for the virtualenv, plus 133 MB of model weights (84 MB `htdemucs`,
+  55 MB `htdemucs_6s`; `setup.sh` fetches both) and job storage
 - 4 GB of RAM free while a job runs
 
 The virtualenv measured **6.0 GB on x86_64**, because PyPI's default `torch`
@@ -180,17 +203,39 @@ and `run.sh` and the systemd unit both load it.
 | `STEM_DATA_DIR` | `./data` | Jobs and downloaded models. |
 | `STEM_MODEL_DIR` | `<data>/models` | Model weights. |
 | `STEM_WEB_DIR` | `./web` | Static front end. |
-| `STEM_MODEL` | `htdemucs.yaml` | Any four-stem model `audio-separator` knows. |
+| `STEM_MODEL` | `htdemucs.yaml` | Which model an upload gets when it does not pick one. Must be one of the registered models (`htdemucs.yaml`, `htdemucs_6s.yaml`); anything else is fatal at startup. |
 | `STEM_MAX_UPLOAD_MB` | `100` | Rejected before the body is read. |
 | `STEM_MAX_DURATION_S` | `300` | Checked with ffprobe after upload. Set with the mobile mixer's memory cost in mind — see below. |
 | `STEM_JOB_TTL_HOURS` | `24` | Age at which a job's directory is deleted. |
 | `STEM_WORKERS` | `1` | Concurrent separations. Raising this on a 4-core box makes both jobs slower without finishing either sooner. |
-| `STEM_PREVIEW_BITRATE` | `192k` | Playback copies only; downloads are unaffected. |
+| `STEM_PREVIEW_BITRATE` | `128k` | Playback copies only; downloads are unaffected. Previews are mono, so this spends more bits per channel than the 192 kbps stereo it replaced. |
 | `STEM_SEPARATOR_TIMEOUT_S` | `3600` | Separation is killed past this. |
 | `STEM_FFMPEG`, `STEM_FFPROBE`, `STEM_SEPARATOR_BIN` | from `PATH` | Explicit binary paths. |
 
+Models are a fixed registry (`server/stemapp/config.py`) rather than a string
+passed through to `audio-separator`, because nothing downstream works without
+knowing a model's stem names in advance: they appear in URLs, in on-disk
+paths, in the job record and in the mixer's channel list. Adding a model means
+adding its stem order and its `--custom_output_names` mapping there — after
+which `setup.sh` fetches its weights and the upload picker offers it without
+further changes.
+
 `python -m stemapp --check` prints the resolved configuration and verifies the
 external tools without starting the server.
+
+## Tests
+
+```
+bash test.sh
+```
+
+Standard-library `unittest`, no ffmpeg, no `audio-separator`, no network and no
+data directory — so it runs on the deployment box itself, between `git pull`
+and `sudo systemctl restart stem`, on the same Python the service uses. It
+covers the multipart parser, `Range` parsing, filename sanitisation, error
+scrubbing, the mixdown filter graph at both stem counts, configuration and
+model resolution, and the job store's identity, expiry and restart behaviour.
+There is no CI; running this before a restart is what catches a regression.
 
 ## API
 
@@ -198,14 +243,14 @@ external tools without starting the server.
 
 | | Route | |
 | --- | --- | --- |
-| `GET` | `/api/config` | Limits, stem names, accepted formats. |
+| `GET` | `/api/config` | Limits, the available models and their stems, accepted formats. |
 | `POST` | `/api/key` | K — verifies a key. |
-| `POST` | `/api/jobs` | K — `multipart/form-data`, field `file`. Returns the job. |
+| `POST` | `/api/jobs` | K — `multipart/form-data`, field `file`, optional field `model` naming one of the models `/api/config` lists. Returns the job. |
 | `GET` | `/api/jobs/{id}` | State, progress, duration, error. |
 | `DELETE` | `/api/jobs/{id}` | K — deletes the job and its files. |
 | `GET` | `/api/jobs/{id}/preview/{stem}.mp3` | Playback copy. Supports `Range`. |
 | `GET` | `/api/jobs/{id}/stems/{stem}.wav` | Lossless stem. |
-| `GET` | `/api/jobs/{id}/stems.zip` | All four, built on first request. |
+| `GET` | `/api/jobs/{id}/stems.zip` | Every stem this job has, built on first request. |
 | `POST` | `/api/jobs/{id}/mix` | K — `{"gains":{…},"format":"wav"\|"mp3"}`. Returns a URL plus the measured peak and any attenuation applied. |
 | `GET` | `/api/jobs/{id}/mix/{mix}.{fmt}` | The rendered mix. |
 
@@ -219,23 +264,31 @@ progress bar restarts each time.
 
 Faders travel from −48 dB to +12 dB with unity at 0.8 of the way up; dragging
 snaps to unity, keyboard steps do not. Double-click or press Enter on a fader to
-reset it. Waveforms share one vertical scale across the four stems, so a stem
+reset it. Waveforms share one vertical scale across the stems, so a stem
 that is genuinely quiet looks quiet.
 
 | Key | |
 | --- | --- |
 | Space | play / pause |
 | ← → | seek 5 seconds |
-| 1–4 | solo that stem |
-| Shift+1–4 | mute that stem |
+| 1–6 | solo that stem |
+| Shift+1–6 | mute that stem |
 
 The monitor fader is playback only and is not part of an export.
+
+A fader resets on Enter or a double-click, deliberately not on Space. Dragging
+a fader leaves it focused, and a keystroke there reaches both the fader's own
+handler and the global shortcut handler — so while the fader also treated
+Space as a reset, one press snapped the fader you had just set back to unity
+*and* toggled the transport. Space is play/pause everywhere now, focused fader
+or not.
 
 **Instrumental** is a fixed-preset export next to the regular mix export:
 vocals out, everything else at unity, ignoring whatever the faders currently
 say. It reuses the same server-side mixdown path as a regular export (same
 clip protection, same lossless-stem source) with the gains hardcoded rather
-than read from the mixer state.
+than read from the mixer state. It is written against whatever stems the job
+has, so on a six-stem job it keeps guitar and piano too.
 
 Fader positions, mutes and solos are written to `localStorage` as you set them
 and restored when you reopen the same job. That is there for phones: a mobile
@@ -283,9 +336,12 @@ needed on-device confirmation.
 
 ## Disk per job
 
-For a five-minute track, roughly: 210 MB of stems, 30 MB of previews, and
-another 210 MB once someone downloads the zip. The decoded source WAV is
-deleted as soon as the stems exist. Everything goes when the TTL expires.
+For a five-minute four-stem track, roughly: 210 MB of stems, 30 MB of
+previews, and another 210 MB once someone downloads the zip. A six-stem job is
+half again as much stem and zip data — around 315 MB each — while previews stay
+near 30 MB, since going mono offsets the two extra stems. The decoded source
+WAV is deleted as soon as the stems exist. Everything goes when the TTL
+expires.
 
 ## What was measured, and what was not
 
@@ -313,10 +369,33 @@ around on comparable hardware.
   balances surviving a reload — no console errors, no CSP violations, no
   horizontal overflow at any of the three sizes.
 
-### The mixer's memory cost scales with track length
+Measured when six-stem support was added, on the same x86_64 hardware:
+
+- A real `htdemucs_6s` job ran through the whole app — upload, probe, decode,
+  separation over two passes, 16-bit normalisation, previews — and produced
+  six stereo stems and six mono previews. **6.0 s of audio took 38.5 s**, which
+  is model-loading cost, not a throughput figure; no longer input was timed.
+- The `--custom_output_names` mapping was confirmed by running the separator,
+  not only by reading it: `htdemucs_6s` wrote `vocals`, `drums`, `bass`,
+  `guitar`, `piano` and `other` under exactly those filenames.
+- A six-stem mixdown at unity came out **bit-for-bit identical** to the same
+  six stems summed by an independent `ffmpeg amix=normalize=0` invocation.
+- Clip protection at the production −0.3 dBFS ceiling: a six-stem sum peaking
+  at +2.14 dBFS was attenuated by −2.44 dB and the output measured
+  **−0.300 dBFS**.
+- A `job.json` written before the `model` field existed still loads, reports
+  the four-stem layout, serves its stems and renders a mix; requesting
+  `guitar` from it returns 404.
+- Chromium at 1440×900 and 390×844 on a six-stem job: six strips, three
+  columns wrapping to two rows on desktop, one column on the phone layout, all
+  six waveforms sized, keys `5` and `6` reaching the new stems, and Space on a
+  focused fader toggling transport without moving the fader. Four-stem jobs
+  re-checked at both sizes and unchanged.
+
+### The mixer's memory cost, and why previews are mono
 
 Opening a 4-minute track in a 390×844 mobile-Chrome context, measured as
-resident memory across every Chromium process:
+resident memory across every Chromium process, back when previews were stereo:
 
 | | |
 | --- | --- |
@@ -324,23 +403,40 @@ resident memory across every Chromium process:
 | Time to playable, on localhost | 6.7 s |
 | RSS attributable to the mixer | 511 MB |
 
-Roughly 339 MB of that is the four decoded stems and is not
+Roughly 339 MB of that was the four decoded stems, and that part is not
 implementation-specific: `AudioBuffer` holds 32-bit float per sample per
-channel, so four stereo stems at the 44.1 kHz context rate cost
+channel, so four *stereo* stems at the 44.1 kHz context rate cost
 `4 × 240 × 44100 × 2 × 4` bytes on any engine. The remaining ~172 MB is
 Chromium's own overhead, measured on desktop Linux, and may differ on a phone.
 
-It scales linearly, so `STEM_MAX_DURATION_S` now defaults to **300** rather
-than the 600 it shipped with. Projecting the measured 240 s figure forward
-linearly (339 MB ÷ 240 s ≈ 1.41 MB/s of decoded audio) — this is arithmetic
-from the one measurement above, not a separate measurement at 300 s — a track
-at the new cap needs roughly 424 MB of decoded audio plus the ~172 MB
-Chromium overhead, call it **~600 MB** total. That is still real weight for a
-phone to hold in one tab, just no longer the ~1 GB a 10-minute upload would
-have demanded under the old default. If a track near the cap gets a tab
-killed in practice, the actual fix is changing the mixer to stream from
-`<audio>` elements instead of decoding whole buffers, not lowering the limit
-further — halving it again would start constraining ordinary song lengths.
+That cost is linear in stem count, so six stereo stems would not fit. The
+arithmetic below is projection from the single measurement above, not further
+measurement, at 0.353 MB per stem-second stereo and half that mono:
+
+| At the 300 s cap | Decoded audio | With ~172 MB overhead |
+| --- | --- | --- |
+| 4 stems, stereo (previous behaviour) | 424 MB | ~596 MB |
+| 6 stems, stereo | 635 MB | ~807 MB |
+| **6 stems, mono (current)** | **318 MB** | **~490 MB** |
+| 4 stems, mono (current) | 212 MB | ~384 MB |
+
+`STEM_MAX_DURATION_S` had already dropped from 600 to 300 to keep the
+four-stem stereo case near 600 MB. Six stereo stems would have blown through
+that and forced the cap down again, to around 200 s — which cuts most finished
+songs. Mono previews cost exactly half, which buys the two extra stems and
+then some: a six-stem job now holds *less* decoded audio than a four-stem one
+did before.
+
+The trade is that monitoring is mono, so a hard-panned stem sounds centred
+while you are setting faders. Nothing downloadable is affected — stems, the
+zip and every rendered mix are summed server-side from the stereo lossless
+files, which the preview encoder only reads. Preview bandwidth is unchanged
+too: six mono stems at 128 kbps over 300 s measured **29.4 MB**, against
+28.8 MB for the four stereo stems at 192 kbps they replace.
+
+If a track near the cap still gets a tab killed, the fix remains changing the
+mixer to stream from `<audio>` elements rather than decoding whole buffers —
+mono buys headroom, it does not remove the ceiling.
 
 ### ARM, now measured in the field
 
@@ -356,6 +452,15 @@ estimate — was still 9:06 into a 3:15 track partway through its second
 `htdemucs` pass, putting the final time at noticeably more than 2.8×. That's
 roughly 1.7× slower than the 1.75× realtime measured on the 4-core x86_64
 container above, for the same model.
+
+**`htdemucs_6s` on ARM has not been measured at all.** It is a larger model and
+will be slower, but by how much on an Ampere A1 is unknown — no ARM hardware
+has ever been available to this project's own testing, and the x86_64 six-stem
+run above was a 6-second clip dominated by model loading, not a throughput
+measurement. Treat the four-stem ~3× realtime as a floor rather than an
+estimate, and take a real number off the box before planning around one.
+`STEM_SEPARATOR_TIMEOUT_S` stays at 3600, which leaves headroom even if six
+stems prove several times slower than four.
 
 ### WebKit, now exercised in the field
 
