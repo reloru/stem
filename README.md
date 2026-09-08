@@ -24,8 +24,10 @@ download has been through the lossy copies the browser uses for playback.
 **On the six-stem model's quality.** demucs' own README reports: *"Quick
 testing seems to show okay quality for `guitar`, but a lot of bleeding and
 artifacts for the `piano` source."* That is the model authors' assessment, not
-a limitation of this app. Six stems also costs more CPU than four, which is
-why it is a per-track choice rather than the default.
+a limitation of this app. That quality caveat, not CPU cost, is why the model
+is a per-track choice: six-stem separation was measured at roughly 9% *faster*
+than four-stem on the deployment box (see below), so there is no performance
+reason to avoid it.
 
 ## How it works
 
@@ -453,14 +455,33 @@ estimate — was still 9:06 into a 3:15 track partway through its second
 roughly 1.7× slower than the 1.75× realtime measured on the 4-core x86_64
 container above, for the same model.
 
-**`htdemucs_6s` on ARM has not been measured at all.** It is a larger model and
-will be slower, but by how much on an Ampere A1 is unknown — no ARM hardware
-has ever been available to this project's own testing, and the x86_64 six-stem
-run above was a 6-second clip dominated by model loading, not a throughput
-measurement. Treat the four-stem ~3× realtime as a floor rather than an
-estimate, and take a real number off the box before planning around one.
-`STEM_SEPARATOR_TIMEOUT_S` stays at 3600, which leaves headroom even if six
-stems prove several times slower than four.
+### Six stems costs less than four, measured
+
+Both models were then run on the same box against the **same 167 s track**,
+back to back, with elapsed time read from each job's own record rather than a
+stopwatch:
+
+| Model | Audio | Elapsed | Realtime |
+| --- | --- | --- | --- |
+| `htdemucs` (4 stems) | 167 s | 508 s | **3.04×** |
+| `htdemucs_6s` (6 stems) | 167 s | 463 s | **2.77×** |
+| `htdemucs_6s` (6 stems) | 331 s | 906 s | **2.74×** |
+
+Six-stem separation is about **9% faster** than four-stem on this hardware, not
+slower. That is the opposite of what was expected when the six-stem option was
+added — the reasoning was that a model producing more sources must cost more —
+and it is worth stating plainly that the expectation was wrong rather than
+quietly correcting the number. Why the larger output set is cheaper here has
+not been established and is not guessed at.
+
+The two six-stem figures also agree across a 2× difference in track length
+(2.77× and 2.74×), which makes this a throughput number rather than one skewed
+by the fixed model-loading cost. It supersedes the earlier four-stem ~3×
+estimate for planning: that estimate came from stopwatch timings of different
+tracks, while the 3.04× above is the same model measured properly.
+
+`STEM_SEPARATOR_TIMEOUT_S` stays at 3600. At 2.8× realtime the 300 s duration
+cap implies roughly 14 minutes of separation, well inside it.
 
 ### WebKit, now exercised in the field
 
