@@ -65,6 +65,18 @@ a stranger cloning the repo.
   cold-launch state loss, the Quick Look download issue) came from Reed
   using the installed PWA on his own iPhone. Don't assume "the friend's
   device" is the only non-dev environment that matters.
+- **"No sound on the iPhone" — check the ringer switch first, before any
+  code hypothesis.** iOS routes Web Audio through the physical silent/ring
+  switch, so a muted switch produces exactly the symptom set of a playback
+  bug: transport running, playhead advancing, waveforms drawn, downloaded
+  stems audible, nothing from the speaker. It also survives an app that was
+  working the day before, so a report of "it broke after the update" is not
+  evidence against it. This cost most of a session: a deploy had just landed
+  that changed previews to mono, the timing looked causal, and that
+  correlation outweighed the simpler explanation for several rounds of
+  diagnosis. Bluetooth earbuds bypass the switch, which is why it played
+  through earbuds and not the speaker — that asymmetry is the tell. Rule it
+  out in one question before measuring anything.
 - **He interrupts often, sometimes mid-tool-call, sometimes by accident**
   (stray characters like a trailing `*` land as their own message). Distinct
   from a real course-correction — read the next message before assuming an
@@ -174,9 +186,10 @@ a stranger cloning the repo.
     — became a model registry in `config.py`, and a job now records which model
     separated it, so its stem layout is fixed for its lifetime rather than
     read from a server-wide setting. The model is chosen per upload from a
-    picker on the upload screen, because six stems costs more CPU and demucs'
-    own README calls its piano source bleeding-prone; forcing it on every
-    track would have been wrong. **Previews went mono**, which is what made
+    picker on the upload screen, because demucs' own README calls its piano
+    source bleeding-prone; forcing it on every track would have been wrong.
+    (The other stated reason at the time — that six stems costs more CPU —
+    turned out to be false; see the field measurements below.) **Previews went mono**, which is what made
     six stems fit a phone at all — six stereo stems at the 300 s cap project
     to ~635 MB of decoded `AudioBuffer` against an envelope already near
     600 MB, while six mono stems come to ~318 MB, less than the four stereo
@@ -229,6 +242,27 @@ not this session's own measurement — real evidence, but a different kind
 and a different confidence level than a controlled benchmark. If a future
 task involves ARM-specific behavior, say plainly that it can't be verified
 locally and needs Reed to run it, the same way this session had to.
+
+**A symptom that appears right after a deploy is not thereby caused by it.**
+The silence incident recorded in the working-agreement section above was the
+iPhone's ringer switch, but it surfaced hours after a deploy that had changed
+the exact subsystem involved, and that coincidence drove several rounds of
+increasingly specific investigation into a cause that did not exist. What
+should have carried more weight than the timing: the evidence was already
+inconsistent with a code fault — the preview files measured healthy, the node
+graph rendered audibly in Chromium, and the downloaded stems played. When the
+artifacts all check out, stop refining hypotheses about the artifacts and look
+at the environment.
+
+**When WebKit behaviour is the open question, build a probe rather than
+argue.** No Safari is reachable from a Claude sandbox, so iOS questions
+otherwise turn into speculation. A self-contained HTML page published as an
+Artifact, opened on the phone, closed that gap in one round: four tones
+through the mixer's exact node graph (buffer source → per-stem gain → monitor
+gain → destination) differing only in channel layout, with Heard/Nothing
+buttons and a copyable result block. It ruled out the mono downmix by
+measurement instead of by argument. Rebuild it the same way when needed; it
+took one file and no server changes.
 
 **iOS/WebKit is real now, not a documented gap to wave at.** Early in this
 session, iOS support was reasoned about and explicitly deprioritized on the
@@ -329,8 +363,31 @@ checking that the request succeeded.
    holds unchanged — there is nothing to wait on. Revisit that if Actions is
    ever added. Everything the suite does *not* cover, meaning anything that
    touches ffmpeg or the separator, is still verified by hand before pushing.
-6. **`htdemucs_6s` throughput on ARM is unmeasured.** The four-stem ~3×
-   realtime figure is a floor for the larger model, not an estimate of it. The
-   only six-stem timing that exists is a 6-second clip taking 38.5 s on
-   x86_64, which is model-loading cost and says nothing about throughput. Get
-   a real number off the box before planning around one.
+6. **ARM throughput is now measured for both models, and six stems is the
+   cheaper one.** Same 167 s track, same box, back to back, elapsed read from
+   each job record: `htdemucs` 508 s (3.04× realtime), `htdemucs_6s` 463 s
+   (2.77×). A 331 s six-stem run came in at 2.74×, so the figure holds across
+   track length and is throughput rather than model-loading skew. Six stems is
+   ~9% *faster* than four. Nobody predicted that — the assumption written into
+   the original design was the opposite, on reasoning rather than
+   measurement. The mechanism is not established; don't invent one. Use 2.8×
+   for six-stem planning and 3.0× for four.
+7. **The mono preview downmix can cancel, and has not been fixed.** Previews
+   are encoded with ffmpeg `-ac 1`, which sums (L+R)/2. Content whose channels
+   are polarity-inverted against each other cancels to exact silence —
+   reproduced here: a stereo source at −24 dBFS produced a −inf dBFS mono
+   preview, while the downloadable stereo WAV was untouched. Real music rarely
+   does this across a whole mix, and it was *not* the cause of the silence
+   incident above (every preview measured −2 to −42 dB, all healthy). But
+   wide-stereo processing is common in produced material, so partial
+   cancellation on one stem is plausible. The symptom to look for is a single
+   preview that is silent or far quieter than its own WAV. No linear downmix
+   avoids this; the fixes are taking one channel, measuring per stem and
+   falling back, or reverting to stereo previews and lowering the duration cap
+   for six-stem jobs. Not worth building until it actually bites.
+8. **The deployed box accepts tracks longer than the 300 s default.** A 331 s
+   upload separated successfully, so `STEM_MAX_DURATION_S` on the box has been
+   raised above what `setup.sh` writes. The mono-preview memory budget in the
+   README is sized against 300 s; at 331 s a six-stem job holds roughly 350 MB
+   of decoded audio rather than 318 MB. Not a problem observed in practice,
+   but the documented envelope and the deployed configuration disagree.
